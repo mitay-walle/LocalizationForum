@@ -197,7 +197,7 @@ async function renderHome() {
         <div class="langs">${g.languages
           .map((l) => {
             const p = pct(g.approved[l] || 0, g.total);
-            return `<a class="lang-row" href="${href(g.slug, l)}"><b>${esc(l)}</b><span class="bar"><i style="width:${p}%"></i></span><span class="pct">${p}%</span></a>`;
+            return `<a class="lang-row" href="${href(g.slug, l)}"><b>${esc(l)}</b><span class="bar"><i style="width:${p}%"></i></span><span class="pct">${p}%</span>${stageChip(g.status?.[l])}</a>`;
           })
           .join('')}</div>
         ${g.repo ? `<div style="margin-top:10px"><a href="https://github.com/${esc(g.repo)}/releases" target="_blank" rel="noopener">Скачать релизы перевода →</a></div>` : ''}
@@ -205,6 +205,15 @@ async function renderHome() {
     )
     .join('')}</div>`;
 }
+
+// ---------- этапы перевода языка ----------
+const STAGES = [
+  ['open', 'Групповой перевод', 'Все предлагают варианты и голосуют'],
+  ['review', 'Апрув', 'Модераторы проверяют и утверждают; предлагать и голосовать могут только модераторы'],
+  ['done', 'Готово', 'Перевод завершён и закрыт для изменений'],
+];
+const stageInfo = (id) => STAGES.find((x) => x[0] === id) || STAGES[0];
+const stageChip = (id) => { const [k, t, d] = stageInfo(id); return `<span class="stage ${k}" title="${esc(d)}">${t}</span>`; };
 
 // ---------- страница перевода ----------
 const FILTERS = [
@@ -218,7 +227,7 @@ const FILTERS = [
 let state = null; // { slug, lang, game, data, params }
 
 async function renderGame(slug, lang, q) {
-  const { game, stats, canManage } = await api(`/games/${encodeURIComponent(slug)}`);
+  const { game, stats, canManage, status, moderates } = await api(`/games/${encodeURIComponent(slug)}`);
   if (!lang || !game.languages.includes(lang)) {
     location.replace(href(slug, game.languages[0]));
     return;
@@ -231,7 +240,11 @@ async function renderGame(slug, lang, q) {
     api(`/games/${encodeURIComponent(slug)}/files?lang=${encodeURIComponent(lang)}`),
     api(`/games/${encodeURIComponent(slug)}/strings?${qs}`),
   ]);
-  state = { slug, lang, game, data, params, files: files.files };
+  const stage = status?.[lang]?.status || 'open';
+  const canMod = !!moderates?.[lang];
+  // Что можно делать на этом этапе (сервер проверяет то же самое)
+  const can = { propose: stage === 'open' || (stage === 'review' && canMod), vote: stage === 'open' || (stage === 'review' && canMod), approve: stage !== 'done' && canMod };
+  state = { slug, lang, game, data, params, files: files.files, stage, can };
   const st = stats.find((s) => s.lang === lang) || { approved: 0, stale: 0, voting: 0, total: 0 };
   state.st = st;
 
@@ -254,6 +267,7 @@ async function renderGame(slug, lang, q) {
           ${st.approved ? `<button class="btn small" data-act="download" data-slug="${esc(slug)}" data-lang="${esc(lang)}">Скачать перевод .zip</button>` : ''}
           ${canManage ? `<a class="btn small" href="#/g/${encodeURIComponent(slug)}/settings">Настройки игры</a>` : ''}
         </div>
+        ${renderStageBanner(status?.[lang], canMod)}
         ${!st.total ? `<div class="empty">В игре пока нет строк.${canManage ? ` Загрузите оригинальные файлы в <a href="#/g/${encodeURIComponent(slug)}/settings">настройках игры</a>.` : ''}</div>` : ''}
         <div class="toolbar">
           <nav class="tabs">${FILTERS.map(([id, name]) => `<a href="${href(slug, lang, { ...params, filter: id, page: 1 })}" class="${params.filter === id ? 'on' : ''}">${name}</a>`).join('')}</nav>
@@ -269,17 +283,28 @@ async function renderGame(slug, lang, q) {
     </div>`;
 }
 
+function renderStageBanner(info, canMod) {
+  const cur = info?.status || 'open';
+  const [, , desc] = stageInfo(cur);
+  const when = info?.updated_at ? ` · ${esc(info.by || '')} ${new Date(info.updated_at).toLocaleDateString()}` : '';
+  const ctl = canMod
+    ? `<span class="spacer"></span><div class="seg" role="group" aria-label="Этап перевода">${STAGES.map(([k, t]) => `<button type="button" data-act="stage" data-v="${k}" class="${k === cur ? 'on' : ''}">${t}</button>`).join('')}</div>`
+    : '';
+  return `<div class="stage-banner ${cur}">${stageChip(cur)}<span class="muted">${esc(desc)}${when}</span>${ctl}</div>`;
+}
+
 function renderString(s) {
-  const mod = state.data.canModerate;
+  const mod = state.data.canModerate && state.can.approve;
+  const { propose: canPropose, vote: canVote } = state.can;
   const approved = s.approved_text != null
     ? `<div class="approved ${s.stale ? 'stale' : ''}">${s.stale ? '<span class="badge">оригинал изменился</span>' : ''}<div class="atext">${esc(s.approved_text)}</div><span class="meta">утверждено${s.approved_by ? ` · ${esc(s.approved_by)}` : ''}${mod ? ` · <button class="link" data-act="unapprove" data-id="${s.id}">снять</button>` : ''}</span></div>`
     : '';
   const variants = s.variants
     .map((v) => {
       const chosen = s.approved_variant === v.id && !s.stale;
-      const canDelete = me && (v.author === me.login || mod);
+      const canDelete = me && state.stage !== 'done' && ((v.author === me.login && canPropose) || mod);
       return `<li class="variant">
-        <button class="vote ${v.mine ? 'mine' : ''}" data-act="vote" data-id="${v.id}" data-mine="${v.mine ? 1 : 0}" title="${v.mine ? 'Убрать голос' : 'Голосовать'}">▲<span>${v.votes}</span></button>
+        <button class="vote ${v.mine ? 'mine' : ''}" data-act="vote" data-id="${v.id}" data-mine="${v.mine ? 1 : 0}" title="${canVote ? (v.mine ? 'Убрать голос' : 'Голосовать') : 'Голосование закрыто на этом этапе'}" ${canVote ? '' : 'disabled'}>▲<span>${v.votes}</span></button>
         <div><div class="vtext ${chosen ? 'chosen' : ''}">${esc(v.text)}</div><div class="vmeta">${esc(v.author || 'аноним')}${v.ai ? ' <span class="ai" title="Предложено ИИ-ассистентом через MCP от имени пользователя">ИИ</span>' : ''}</div></div>
         <div class="vactions">
           ${mod && !chosen ? `<button class="btn small" data-act="approve" data-id="${s.id}" data-variant="${v.id}">Утвердить</button>` : ''}
@@ -296,15 +321,15 @@ function renderString(s) {
     <div class="str-tr">
     ${approved}
     ${variants ? `<ul class="variants">${variants}</ul>` : ''}
-    <div class="propose">
+    ${canPropose || mod ? `<div class="propose">
       <textarea rows="1" placeholder="${me ? 'Ваш вариант перевода' : 'Войдите, чтобы предложить вариант'}" data-act="draft" data-id="${s.id}" ${me ? '' : 'disabled'}></textarea>
       <div class="propose-row" hidden>
-        <button class="btn primary small" data-act="propose" data-id="${s.id}">Предложить</button>
+        ${canPropose ? `<button class="btn primary small" data-act="propose" data-id="${s.id}">Предложить</button>` : ''}
         ${mod ? `<button class="btn small" data-act="approve-text" data-id="${s.id}">Утвердить этот текст</button>` : ''}
         <button class="link" data-act="copy-source" data-id="${s.id}">вставить оригинал</button>
       </div>
       <ul class="issues"></ul>
-    </div>
+    </div>` : ''}
   </div>
   </article>`;
 }
@@ -441,6 +466,24 @@ document.addEventListener('keydown', (e) => {
   if (e.target.matches?.('textarea[data-act="draft"]') && e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
     e.preventDefault();
     e.target.closest('[data-string]').querySelector('[data-act="propose"]').click();
+  }
+});
+
+// Смена этапа перевода (только модераторы языка)
+async function setStage(next) {
+  await api(`/games/${encodeURIComponent(state.slug)}/status`, { method: 'POST', body: { lang: state.lang, status: next } });
+  await route();
+}
+document.addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-act=stage]');
+  if (!b || !state || b.classList.contains('on')) return;
+  const prev = state.stage;
+  const next = b.dataset.v;
+  try {
+    await setStage(next);
+    toast(`Этап: ${stageInfo(next)[1]}`, { label: 'смена этапа', run: () => setStage(prev) });
+  } catch (err) {
+    toast(err.message);
   }
 });
 
@@ -1178,13 +1221,16 @@ function renderSide(files, st) {
   const head = `<div class="side-sort">${FILE_SORTS.map(
     ([k, title]) => `<button type="button" data-act="file-sort" data-k="${k}" class="${sort.key === k ? 'on' : ''}" title="Сортировать: ${title.toLowerCase()}">${title}${sort.key === k ? (sort.dir === 'asc' ? ' ↑' : ' ↓') : ''}</button>`,
   ).join('')}</div>`;
-  const all = `<a href="${href(slug, lang, { ...params, file: '', page: 1 })}" class="${params.file ? '' : 'on'}"><span class="fname">Все файлы</span><small>${st.approved}/${st.total}</small></a>`;
+  // +N — строки, у которых есть предложенные варианты, но ещё нет утверждённого перевода
+  const plus = (n) => (n ? `<span class="vcount" title="Строк с вариантами без утверждения: ${n}">+${n}</span> ` : '');
+  const all = `<a href="${href(slug, lang, { ...params, file: '', page: 1 })}" class="${params.file ? '' : 'on'}"><span class="fname">Все файлы</span><small>${plus(st.voting)}${st.approved}/${st.total}</small></a>`;
   const rows = sortFiles(files)
     .map((f) => {
       const i = f.file.lastIndexOf('/');
       const dir = i >= 0 ? f.file.slice(0, i + 1) : '';
       const p = f.total ? Math.round((f.approved / f.total) * 100) : 0;
-      return `<a href="${href(slug, lang, { ...params, file: f.file, page: 1 })}" class="${f.file === params.file ? 'on' : ''}" title="${esc(f.file)} — ${p}%"><span class="fname">${dir ? `<span class="dir">${esc(dir)}</span>` : ''}${esc(f.file.slice(i + 1))}</span><small class="${f.approved === f.total ? 'done' : ''}">${f.approved}/${f.total}</small><i class="fbar" style="width:${p}%"></i></a>`;
+      const pv = f.total ? Math.round(((f.voting || 0) / f.total) * 100) : 0;
+      return `<a href="${href(slug, lang, { ...params, file: f.file, page: 1 })}" class="${f.file === params.file ? 'on' : ''}" title="${esc(f.file)} — утверждено ${p}%${f.voting ? `, с вариантами ещё ${f.voting}` : ''}"><span class="fname">${dir ? `<span class="dir">${esc(dir)}</span>` : ''}${esc(f.file.slice(i + 1))}</span><small class="${f.approved === f.total ? 'done' : ''}">${plus(f.voting)}${f.approved}/${f.total}</small><i class="fbar" style="width:${p}%"></i>${pv ? `<i class="fbar vbar" style="left:${p}%;width:${pv}%"></i>` : ''}</a>`;
     })
     .join('');
   return head + all + rows;
