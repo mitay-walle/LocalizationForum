@@ -296,12 +296,15 @@ function renderStageBanner(info, canMod) {
 function renderString(s) {
   const mod = state.data.canModerate && state.can.approve;
   const { propose: canPropose, vote: canVote } = state.can;
+  // Утверждённый вариант уже показан блоком «утверждено» — в списке его не дублируем
+  const chosenVariant = s.stale ? null : s.variants.find((v) => v.id === s.approved_variant);
   const approved = s.approved_text != null
-    ? `<div class="approved ${s.stale ? 'stale' : ''}">${s.stale ? '<span class="badge">оригинал изменился</span>' : ''}<div class="atext">${esc(s.approved_text)}</div><span class="meta">утверждено${s.approved_by ? ` · ${esc(s.approved_by)}` : ''}${mod ? ` · <button class="link" data-act="unapprove" data-id="${s.id}">снять</button>` : ''}</span></div>`
+    ? `<div class="approved ${s.stale ? 'stale' : ''}">${s.stale ? '<span class="badge">оригинал изменился</span>' : ''}<div class="atext">${esc(s.approved_text)}</div><span class="meta">утверждено${s.approved_by ? ` · ${esc(s.approved_by)}` : ''}${chosenVariant ? ` · автор ${esc(chosenVariant.author || 'аноним')}${chosenVariant.ai ? ' <span class="ai" title="Предложено ИИ-ассистентом через MCP от имени пользователя">ИИ</span>' : ''}${chosenVariant.votes ? ` · ▲ ${chosenVariant.votes}` : ''}` : ''}${mod ? ` · <button class="link" data-act="unapprove" data-id="${s.id}">снять</button>` : ''}</span></div>`
     : '';
   const variants = s.variants
+    .filter((v) => v !== chosenVariant)
     .map((v) => {
-      const chosen = s.approved_variant === v.id && !s.stale;
+      const chosen = false;
       const canDelete = me && state.stage !== 'done' && ((v.author === me.login && canPropose) || mod);
       return `<li class="variant">
         <button class="vote ${v.mine ? 'mine' : ''}" data-act="vote" data-id="${v.id}" data-mine="${v.mine ? 1 : 0}" title="${canVote ? (v.mine ? 'Убрать голос' : 'Голосовать') : 'Голосование закрыто на этом этапе'}" ${canVote ? '' : 'disabled'}>▲<span>${v.votes}</span></button>
