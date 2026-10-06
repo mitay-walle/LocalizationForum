@@ -7,7 +7,7 @@ import { publishGame } from './publish.js';
 import { SignJWT, jwtVerify } from 'jose';
 import { env, list } from './env.js';
 import { isBuiltin, listFormats, resolveFormat, validateLinesConfig, makeLinesFormat } from './formats/index.js';
-import { exportLanguage, finalizeSource, importSource, importTranslation, type Game, type InFile } from './sync.js';
+import { exportLanguage, finalizeSource, importSource, importTranslation, type Game, type GameLink, type InFile } from './sync.js';
 import { validateVariant, type Rule } from './validate.js';
 import { variantLimits } from './limits.js';
 
@@ -43,7 +43,8 @@ async function requireUser(c: Context): Promise<User> {
 }
 
 async function gameBySlug(slug: string): Promise<Game> {
-  const [g] = await db()<Game[]>`select id, slug, title, repo, format, source_lang, languages, rules from games where slug = ${slug}`;
+  const [g] = await db()<Game[]>`
+    select id, slug, title, repo, format, source_lang, languages, rules, description, links, cover_url from games where slug = ${slug}`;
   if (!g) fail(404, 'Игра не найдена');
   return g!;
 }
@@ -207,7 +208,8 @@ app.get('/me', async (c) => {
 
 app.get('/games', async (c) => {
   const rows = await db()`
-    select g.slug, g.title, g.repo, g.format, g.source_lang, g.languages,
+    select g.slug, g.title, g.repo, g.format, g.source_lang, g.languages, g.cover_url, g.links,
+      left(g.description, 300) as description,
       (select count(*)::int from strings s where s.game_id = g.id and not s.removed) as total,
       coalesce((select jsonb_object_agg(lang, n) from (
         select a.lang, count(*)::int as n from approved a join strings s on s.id = a.string_id
@@ -606,11 +608,50 @@ function cleanLanguages(list: unknown, sourceLang: string): string[] {
 
 
 
+const LINK_KINDS = ['steam', 'site', 'gog', 'itch', 'other'] as const;
+
+/** Только http(s), без пробелов, не длиннее max. */
+function cleanUrl(v: unknown, what: string, max = 500): string {
+  const s = String(v ?? '').trim();
+  let u: URL | null = null;
+  try {
+    u = new URL(s);
+  } catch {
+    /* ниже */
+  }
+  if (!u || !['http:', 'https:'].includes(u.protocol) || s.length > max || /\s/.test(s)) fail(400, `${what}: нужна ссылка http(s):// не длиннее ${max} символов`);
+  return s;
+}
+
+/** Описание, ссылки и обложка игры. Поле не передано — undefined (не менять); пустое — null / []. */
+function cleanInfo(b: { description?: unknown; links?: unknown; cover_url?: unknown }) {
+  const out: { description?: string | null; links?: GameLink[]; cover_url?: string | null } = {};
+  if (b.description !== undefined) {
+    const d = String(b.description ?? '').replace(/\r\n/g, '\n').trim();
+    if (d.length > 5000) fail(400, 'Описание игры — не длиннее 5000 символов');
+    out.description = d || null;
+  }
+  if (b.cover_url !== undefined) out.cover_url = String(b.cover_url ?? '').trim() ? cleanUrl(b.cover_url, 'Обложка') : null;
+  if (b.links !== undefined) {
+    if (!Array.isArray(b.links)) fail(400, 'links: массив {kind, url, title?}');
+    const list = b.links as { kind?: unknown; url?: unknown; title?: unknown }[];
+    if (list.length > 10) fail(400, 'Не больше 10 ссылок');
+    out.links = list.map((l) => {
+      const kind = String(l?.kind ?? '') as GameLink['kind'];
+      if (!LINK_KINDS.includes(kind)) fail(400, `Тип ссылки: ${LINK_KINDS.join(', ')}`);
+      const title = String(l?.title ?? '').trim();
+      if (title.length > 100) fail(400, 'Подпись ссылки — не длиннее 100 символов');
+      return { kind, url: cleanUrl(l?.url, 'Ссылка'), ...(title ? { title } : {}) };
+    });
+  }
+  return out;
+}
+
 /** Создать игру. Создатель становится её владельцем (модератор '*'). */
 app.post('/games', async (c) => {
   const user = await requireUser(c);
   await requireNotBanned(user, null);
-  const b = await body<{ slug: string; title: string; format: string; sourceLang?: string; languages: string[]; repo?: string }>(c);
+  const b = await body<{ slug: string; title: string; format: string; sourceLang?: string; languages: string[]; repo?: string; description?: string; links?: unknown; cover_url?: string }>(c);
   const slug = String(b.slug ?? '').trim();
   const title = String(b.title ?? '').trim();
   const sourceLang = String(b.sourceLang ?? 'en').trim() || 'en';
@@ -621,11 +662,13 @@ app.post('/games', async (c) => {
   const languages = cleanLanguages(b.languages, sourceLang);
   const repo = b.repo?.trim() || null;
   if (repo && !/^[\w.-]+\/[\w.-]+$/.test(repo)) fail(400, 'Репозиторий: owner/name');
+  const info = cleanInfo(b);
   const sql = db();
   const created = await sql.begin(async (tx) => {
     const [g] = await tx<{ id: number }[]>`
-      insert into games (slug, title, format, source_lang, languages, repo, created_by)
-      values (${slug}, ${title}, ${b.format}, ${sourceLang}, ${languages}, ${repo}, ${user.id})
+      insert into games (slug, title, format, source_lang, languages, repo, created_by, description, links, cover_url)
+      values (${slug}, ${title}, ${b.format}, ${sourceLang}, ${languages}, ${repo}, ${user.id},
+              ${info.description ?? null}, ${sql.json((info.links ?? []) as never)}, ${info.cover_url ?? null})
       on conflict (slug) do nothing returning id`;
     if (!g) return null;
     await tx`insert into moderators (game_id, lang, user_id) values (${g.id}, '*', ${user.id})`;
@@ -649,7 +692,10 @@ app.get('/games/:slug/manage', async (c) => {
 /** Изменить название, языки, репозиторий, правила проверок. */
 app.post('/games/:slug/settings', async (c) => {
   const { game } = await requireManager(c);
-  const b = await body<{ title?: string; languages?: string[]; repo?: string | null; rules?: Record<string, Rule[]>; format?: string }>(c);
+  const b = await body<{
+    title?: string; languages?: string[]; repo?: string | null; rules?: Record<string, Rule[]>; format?: string;
+    description?: string | null; links?: unknown; cover_url?: string | null; force?: boolean;
+  }>(c);
   let format = game.format;
   if (b.format !== undefined && b.format !== game.format) {
     if (!(await resolveFormat(String(b.format)))) fail(400, 'Неизвестный формат');
@@ -660,6 +706,16 @@ app.post('/games/:slug/settings', async (c) => {
   const title = b.title !== undefined ? String(b.title).trim() : game.title;
   if (!title || title.length > 200) fail(400, 'Укажите название игры');
   const languages = b.languages !== undefined ? cleanLanguages(b.languages, game.source_lang) : game.languages;
+  // Убрать язык, у которого есть утверждённые переводы, можно только явно (force) — переводы сохранятся, но будут скрыты
+  const dropped = game.languages.filter((l) => !languages.includes(l));
+  if (dropped.length && !b.force) {
+    const busy = await db()<{ lang: string; n: number }[]>`
+      select a.lang, count(*)::int as n from approved a join strings s on s.id = a.string_id
+      where s.game_id = ${game.id} and a.lang = any(${dropped}) group by a.lang`;
+    if (busy.length)
+      fail(422, `У языка ${busy.map((x) => `${x.lang} (${x.n})`).join(', ')} есть утверждённые переводы. Чтобы всё равно убрать язык, подтвердите (force) — переводы сохранятся, но будут скрыты.`);
+  }
+  const info = cleanInfo(b);
   const repo = b.repo === undefined ? game.repo : b.repo?.trim() || null;
   if (repo && !/^[\w.-]+\/[\w.-]+$/.test(repo)) fail(400, 'Репозиторий: owner/name');
   let rules = game.rules;
@@ -680,7 +736,11 @@ app.post('/games/:slug/settings', async (c) => {
   }
   await db()`
     update games set title = ${title}, languages = ${languages}, repo = ${repo}, format = ${format},
-      rules = ${db().json(rules as never)}, updated_at = now()
+      rules = ${db().json(rules as never)},
+      description = ${info.description !== undefined ? info.description : game.description ?? null},
+      links = ${db().json((info.links ?? game.links ?? []) as never)},
+      cover_url = ${info.cover_url !== undefined ? info.cover_url : game.cover_url ?? null},
+      updated_at = now()
     where id = ${game.id}`;
   return c.json({ ok: true });
 });

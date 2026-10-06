@@ -16,6 +16,16 @@ export interface Game {
   source_lang: string;
   languages: string[];
   rules: Record<string, unknown>;
+  description?: string | null;
+  links?: GameLink[];
+  cover_url?: string | null;
+}
+
+export type LinkKind = 'steam' | 'site' | 'gog' | 'itch' | 'other';
+export interface GameLink {
+  kind: LinkKind;
+  url: string;
+  title?: string;
 }
 
 export const hashSource = (s: string) => createHash('sha1').update(s).digest('hex');
