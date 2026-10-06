@@ -45,8 +45,13 @@
 
 1. Войдите и нажмите **«+ Новая игра»**: название, адрес, языки оригинала и перевода.
 2. **Выберите формат файлов.** Есть встроенные (XML RimWorld, JSON и другие). Если вашего нет — в разделе **«Форматы файлов»** можно описать свой построчный формат без программирования и сразу проверить его на настоящем файле.
-3. В **«Настройках игры»** загрузите оригинальные файлы (по одному или целой папкой). Строки появятся на сайте, и можно звать переводчиков.
-4. Там же — модераторы по языкам, правила проверки, импорт уже готового перевода и кнопка **«Опубликовать в GitHub»**: она выкладывает перевод в репозиторий игры и выпускает релизы для каждого языка.
+3. На странице игры (клик по карточке на главной) видно описание, ссылки на Steam и сайт, прогресс по языкам, переводчиков и кнопки релизов. Описание, ссылки и обложку можно поменять в «Настройках игры» → «Об игре».
+4. В **«Настройках игры»** загрузите оригинальные файлы (по одному или целой папкой). Строки появятся на сайте, и можно звать переводчиков.
+5. Там же — модераторы по языкам, правила проверки, импорт уже готового перевода и кнопка **«Опубликовать в GitHub»**: она выкладывает перевод в репозиторий игры и выпускает релизы для каждого языка.
+
+### Как добавить язык перевода
+
+На странице игры в блоке «Языки перевода» выберите язык из списка (или введите код вроде `pt-BR`) и нажмите «Добавить» — так можно добавить сколько угодно языков. Убрать язык — кнопка × в его строке; если по нему уже есть утверждённые переводы, сайт попросит подтвердить, а сами переводы сохранятся (скрытыми) и вернутся, если язык добавить снова. То же самое есть в «Настройках игры» и в форме новой игры. Это могут делать управляющие игрой.
 
 ## ИИ-ассистенты (MCP)
 
@@ -61,7 +66,7 @@
 - **Take part:** sign in with GitHub, pick a game and a language, propose your variant or vote ▲ for the best one (one vote per line — voting for another variant moves your vote).
 - **Stages:** *Group translation* (everyone proposes and votes) → *Review* (moderators approve) → *Done* (closed).
 - **Get the translation:** open the game's GitHub **Releases**, take the newest release for your language (tag `<language>-<version>`, e.g. `ru-1.0`), download the zip from **Assets** and unpack it over the game folder. Don't download the repository source.
-- **Add your game:** *+ New game* → choose or describe the file format → upload the original files in *Game settings* → *Publish to GitHub* when ready.
+- **Add your game:** *+ New game* → choose or describe the file format → upload the original files in *Game settings* → *Publish to GitHub* when ready. Add more translation languages on the game page (*+ Add language*).
 - **Rules:** up to 3 own variants per line (30 in total per line) and 500 per hour; language moderators are exempt. Spammers can be banned per game by its managers or site-wide by admins — banned users can only read.
 - **AI assistants:** connect Claude or another assistant via MCP (⚙ → Tokens and MCP connection); its suggestions are marked “AI”, and humans still approve.
 
