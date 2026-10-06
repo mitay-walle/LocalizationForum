@@ -241,9 +241,13 @@ async function renderGame(slug, lang, q) {
   view.innerHTML = `
     <div class="layout">
       <aside class="side">
-        <a href="${href(slug, lang, { ...params, file: '', page: 1 })}" class="${params.file ? '' : 'on'}">Все файлы <small>${st.total}</small></a>
+        <a href="${href(slug, lang, { ...params, file: '', page: 1 })}" class="${params.file ? '' : 'on'}"><span class="fname">Все файлы</span><small>${st.approved}/${st.total}</small></a>
         ${files.files
-          .map((f) => `<a href="${href(slug, lang, { ...params, file: f.file, page: 1 })}" class="${f.file === params.file ? 'on' : ''}" title="${esc(f.file)}">${esc(f.file)} <small>${f.approved}/${f.total}</small></a>`)
+          .map((f) => {
+            const i = f.file.lastIndexOf('/');
+            const dir = i >= 0 ? f.file.slice(0, i + 1) : '';
+            return `<a href="${href(slug, lang, { ...params, file: f.file, page: 1 })}" class="${f.file === params.file ? 'on' : ''}" title="${esc(f.file)}"><span class="fname">${dir ? `<span class="dir">${esc(dir)}</span>` : ''}${esc(f.file.slice(i + 1))}</span><small class="${f.approved === f.total ? 'done' : ''}">${f.approved}/${f.total}</small></a>`;
+          })
           .join('')}
       </aside>
       <section>
@@ -293,9 +297,11 @@ function renderString(s) {
     })
     .join('');
   return `<article class="str" data-string="${s.id}">
-    <div class="str-head"><span class="mono">${esc(s.key)}</span>${state.params.file ? '' : `<span class="mono">${esc(s.file)}</span>`}</div>
-    <div class="source">${esc(s.source)}</div>
-    ${s.context ? `<div class="context">${esc(s.context)}</div>` : ''}
+    <div class="str-src">
+      <div class="str-head"><span class="mono">${esc(s.key)}</span>${s.context ? `<span class="context">${esc(s.context)}</span>` : ''}${state.params.file ? '' : `<span class="mono file">${esc(s.file)}</span>`}</div>
+      <div class="source">${esc(s.source)}</div>
+    </div>
+    <div class="str-tr">
     ${approved}
     ${variants ? `<ul class="variants">${variants}</ul>` : ''}
     <div class="propose">
@@ -307,6 +313,7 @@ function renderString(s) {
       </div>
       <ul class="issues"></ul>
     </div>
+  </div>
   </article>`;
 }
 
@@ -601,7 +608,7 @@ async function renderSettings(slug, q = new URLSearchParams()) {
         <p class="muted">Сейчас: <b data-count="files">${files}</b> файлов, <b data-count="strings">${strings}</b> строк. ${esc(fmt.hint)}</p>
         ${filePicker(fmt)}
         <label class="check"><input type="checkbox" name="replace"> Это полный набор файлов: скрыть строки из файлов, которых нет в загрузке</label>
-        <div class="actions"><button class="btn primary">Загрузить</button></div>
+        <div class="actions"><button class="btn primary">Загрузить</button>${files ? `<button type="button" class="btn" data-reparse title="Если формат изменили — заново разобрать уже загруженные оригиналы">Пересчитать строки по формату</button>` : ''}</div>
         <ul class="issues"></ul>
       </form>
 
@@ -721,6 +728,21 @@ async function renderSettings(slug, q = new URLSearchParams()) {
     const fresh = await api(`/games/${encodeURIComponent(slug)}/manage`);
     f.querySelector('[data-count=files]').textContent = fresh.files;
     f.querySelector('[data-count=strings]').textContent = fresh.strings;
+  });
+
+  forms.source.querySelector('[data-reparse]')?.addEventListener('click', async () => {
+    const f = forms.source;
+    busy(f, true);
+    try {
+      const r = await api(`/games/${encodeURIComponent(slug)}/reparse`, { method: 'POST' });
+      report(f, [['ok', `Пересчитано: новых ${r.added}, изменено ${r.changed}, скрыто ${r.removed}, без изменений ${r.unchanged}`]]);
+      const fresh = await api(`/games/${encodeURIComponent(slug)}/manage`);
+      f.querySelector('[data-count=strings]').textContent = fresh.strings;
+    } catch (err) {
+      report(f, [['error', err.message]]);
+    } finally {
+      busy(f, false);
+    }
   });
 
   onSubmit('translation', async (f) => {

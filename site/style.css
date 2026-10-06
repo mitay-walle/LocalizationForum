@@ -89,7 +89,7 @@ code, kbd { font-family: var(--mono); font-size: 0.8rem; background: var(--field
 .account { display: flex; align-items: center; gap: 10px; white-space: nowrap; position: relative; }
 .avatar { width: 26px; height: 26px; background: var(--field); }
 
-.view { max-width: 1200px; margin: 0 auto; padding: 28px 24px 72px; }
+.view { max-width: 1440px; margin: 0 auto; padding: 28px 24px 72px; }
 
 /* --- кнопки и поля --- */
 .btn {
@@ -134,10 +134,13 @@ input:focus, select:focus, textarea:focus { background: var(--panel); box-shadow
 .pct { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); font-size: 0.87rem; }
 
 /* страница перевода */
-.layout { display: grid; grid-template-columns: 270px 1fr; gap: 28px; align-items: start; }
+.layout { display: grid; grid-template-columns: 300px 1fr; gap: 28px; align-items: start; }
 .side { position: sticky; top: 76px; max-height: calc(100vh - 96px); overflow: auto; padding: 8px; }
-.side a { display: block; padding: 6px 10px; color: var(--ink); font-size: 0.87rem; word-break: break-all; }
-.side a small { float: right; color: var(--muted); margin-left: 6px; }
+.side a { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 7px 10px; color: var(--ink); font-size: 0.87rem; }
+.side .fname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.side .dir { color: var(--muted); font-size: 0.8rem; }
+.side a small { flex: none; color: var(--muted); font-variant-numeric: tabular-nums; }
+.side a small.done { color: var(--accent); }
 .side a.on, .side a:hover { background: var(--accent-soft); text-decoration: none; }
 
 .stats { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px; margin: 0 0 16px; color: var(--muted); font-size: 0.93rem; }
@@ -150,11 +153,14 @@ input:focus, select:focus, textarea:focus { background: var(--panel); box-shadow
 .tabs a:hover { text-decoration: none; }
 .toolbar .search { flex: 1; min-width: 180px; width: auto; background: var(--panel); box-shadow: var(--shadow-soft); }
 
-.str { padding: 18px 20px; margin-bottom: 18px; }
-.str-head { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); }
+.str { padding: 16px 20px; margin-bottom: 14px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: 8px 28px; align-items: start; }
+.str-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; color: var(--muted); font-size: 0.87rem; }
 .str-head .mono { word-break: break-all; }
-.source { margin: 6px 0 4px; font-size: 1.07rem; white-space: pre-wrap; word-break: break-word; }
+.str-head .file { margin-left: auto; }
+.source { margin: 6px 0 0; font-size: 1.07rem; white-space: pre-wrap; word-break: break-word; }
 .context { font-size: 0.87rem; color: var(--muted); white-space: pre-wrap; }
+.str-tr > :first-child { margin-top: 0; }
+@media (max-width: 1000px) { .str { grid-template-columns: 1fr; } }
 .approved { margin-top: 12px; padding: 10px 12px; background: var(--accent-soft); }
 .approved .atext { white-space: pre-wrap; word-break: break-word; }
 .approved .meta { display: block; font-size: 0.8rem; color: var(--muted); }
@@ -173,7 +179,8 @@ input:focus, select:focus, textarea:focus { background: var(--panel); box-shadow
 .vmeta { font-size: 0.8rem; color: var(--muted); }
 .vactions { display: flex; gap: 8px; align-items: center; }
 
-.propose { margin-top: 12px; }
+.propose { margin-top: 10px; }
+.str-tr > .propose:first-child { margin-top: 0; }
 .propose textarea { min-height: 44px; resize: vertical; }
 .propose-row { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
 .propose-row[hidden] { display: none; }
