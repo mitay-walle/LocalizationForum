@@ -49,7 +49,8 @@ describe.skipIf(!url)('api', async () => {
   beforeAll(async () => {
     const sql = db();
     await sql.unsafe('drop schema public cascade; create schema public;');
-    await sql.unsafe(readFileSync(join(import.meta.dirname, '..', 'db', 'migrations', '001_init.sql'), 'utf8'));
+    const dir = join(import.meta.dirname, '..', 'db', 'migrations');
+    for (const f of readdirSync(dir).filter((x) => x.endsWith('.sql')).sort()) await sql.unsafe(readFileSync(join(dir, f), 'utf8'));
     [boss, alice, bob] = [await login('boss'), await login('alice'), await login('bob')];
   });
   afterAll(() => closeDb());
@@ -159,5 +160,52 @@ describe.skipIf(!url)('api', async () => {
     expect(r.headers.get('location')).toMatch(/^https:\/\/github\.com\/login\/oauth\/authorize\?client_id=cid/);
     expect((await call('GET', '/me', { token: 'garbage' })).json).toEqual({ user: null });
     expect((await call('GET', '/me', { token: boss })).json.user).toMatchObject({ login: 'boss', is_admin: true });
+  });
+
+  it('site: create game, settings, upload source/translation, moderators', async () => {
+    const carol = await login('carol');
+    const dave = await login('dave');
+    const newGame = { slug: 'site-game', title: 'Site Game', format: 'json-nested', sourceLang: 'en', languages: ['ru'] };
+    expect((await call('POST', '/games', { body: newGame })).status).toBe(401);
+    expect((await call('POST', '/games', { token: carol, body: { ...newGame, slug: 'Bad Slug' } })).status).toBe(400);
+    expect((await call('POST', '/games', { token: carol, body: { ...newGame, languages: ['en'] } })).status).toBe(400);
+    expect((await call('POST', '/games', { token: carol, body: newGame })).status).toBe(201);
+    expect((await call('POST', '/games', { token: dave, body: newGame })).status).toBe(422);
+
+    expect((await call('GET', '/games/site-game', { token: carol })).json.canManage).toBe(true);
+    expect((await call('GET', '/games/site-game', { token: dave })).json.canManage).toBe(false);
+    expect((await call('GET', '/games/site-game/manage', { token: dave })).status).toBe(403);
+
+    const up = await call('POST', '/games/site-game/source', {
+      token: carol,
+      body: { files: [{ path: 'en.json', content: JSON.stringify({ menu: { start: 'Start', exit: 'Exit {0}' } }) }, { path: 'x.txt', content: 'ignored' }] },
+    });
+    expect(up.json).toMatchObject({ added: 2, changed: 0, removed: 0 });
+
+    const st = await call('POST', '/games/site-game/settings', { token: carol, body: { languages: ['ru', 'uk'], title: 'Site Game 2', rules: { uk: [{ pattern: '[', message: 'x' }] } } });
+    expect(st.status).toBe(400);
+    expect((await call('POST', '/games/site-game/settings', { token: carol, body: { languages: ['ru', 'uk'], title: 'Site Game 2' } })).status).toBe(200);
+    const m = (await call('GET', '/games/site-game/manage', { token: carol })).json;
+    expect(m.game).toMatchObject({ title: 'Site Game 2', languages: ['ru', 'uk'] });
+    expect(m).toMatchObject({ files: 1, strings: 2 });
+    expect(m.moderators).toEqual([{ login: 'carol', avatar_url: null, lang: '*' }]);
+
+    const tr = await call('POST', '/games/site-game/translation', { token: carol, body: { lang: 'uk', files: [{ path: 'en.json', content: '{"menu":{"start":"Почати"}}' }] } });
+    expect(tr.json).toMatchObject({ imported: 1 });
+    const exp = (await call('GET', '/games/site-game/export?lang=uk')).json;
+    expect(JSON.parse(exp.files[0].content)).toEqual({ menu: { start: 'Почати' } });
+
+    expect((await call('POST', '/games/site-game/moderators', { token: carol, body: { lang: 'ru', login: 'dave' } })).status).toBe(200);
+    expect((await call('GET', '/games/site-game/strings?lang=ru', { token: dave })).json.canModerate).toBe(true);
+    expect((await call('GET', '/games/site-game/manage', { token: dave })).status).toBe(403);
+    expect((await call('POST', '/games/site-game/moderators', { token: carol, body: { lang: '*', login: 'carol', remove: true } })).status).toBe(422);
+
+    // замена всех исходников: файла, которого нет в paths, больше нет
+    const rep = await call('POST', '/games/site-game/source', { token: carol, body: { files: [{ path: 'b.json', content: '{"a":"A"}' }], paths: ['b.json'] } });
+    expect(rep.json).toMatchObject({ added: 1, removed: 2 });
+
+    expect((await call('DELETE', '/games/site-game', { token: carol })).status).toBe(403);
+    expect((await call('DELETE', '/games/site-game', { token: boss })).status).toBe(200);
+    expect((await call('GET', '/games/site-game')).status).toBe(404);
   });
 });
