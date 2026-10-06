@@ -139,7 +139,8 @@ export const LINE_PRESETS: { slug: string; title: string; config: LinesConfig }[
   {
     slug: 'gunpoint',
     title: 'Gunpoint — диалоги .gpc',
-    config: { extensions: ['.gpc'], mode: 'lines', skip: ['^\\s*$', '^\\d+\\s*$'], contextLine: '^(?<label>[A-Za-z][A-Za-z ]*):\\s*$' },
+    // END SCENE — служебная команда сценария (есть в каждом файле), её переводить нельзя
+    config: { extensions: ['.gpc'], mode: 'lines', skip: ['^\\s*$', '^\\d+\\s*$', '^END SCENE\\s*$'], contextLine: '^(?<label>[A-Za-z][A-Za-z ]*):\\s*$' },
   },
   {
     slug: 'properties',
