@@ -24,6 +24,9 @@ describe('lines: gunpoint preset', () => {
     const ru = f.serialize('x.gpc', [{ key: 'L2', source: '', text: 'Ты кто?' }, { key: 'L9', source: '', text: 'Никто.\nправда' }], gpc);
     expect(ru).toBe(gpc.replace('Who are you?', 'Ты кто?').replace('Nobody.', 'Никто. правда'));
   });
+  it('skips the END SCENE script command', () => {
+    expect(f.parse('x.gpc', 'Them:\r\nHi.\r\n3\r\nEND SCENE')).toEqual([{ key: 'L2', source: 'Hi.', context: 'Them' }]);
+  });
   it('validates single line and structural lookalikes', () => {
     expect(f.validate!('Ок')).toEqual([]);
     expect(f.validate!('12')).toHaveLength(1);

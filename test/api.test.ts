@@ -245,6 +245,9 @@ describe.skipIf(!url)('api', async () => {
     expect(exp.translated).toBe(1);
     expect(exp.files).toEqual([{ path: 'Scripts/Intro.gpc', content: gpc.replace('Who are you?', 'Ты кто такой?') }]);
 
+    // пересборка строк из сохранённых оригиналов
+    const rp = await call('POST', '/games/gp/reparse', { token: erin });
+    expect(rp.json).toMatchObject({ added: 0, changed: 0, unchanged: 4, removed: 0 });
     // полная замена исходников удаляет и сохранённые оригиналы
     await call('POST', '/games/gp/source', { token: erin, body: { files: [{ path: 'Scripts/B.gpc', content: 'Me:\r\nYes.\r\n0' }], paths: ['Scripts/B.gpc'] } });
     expect((await call('GET', '/games/gp/export?lang=ru')).json.files).toEqual([]);
