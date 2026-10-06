@@ -1,4 +1,6 @@
 // LocalizationForum — клиент. Без сборки: обычный ES-модуль.
+import { LOCALES, detectLocale, getLocale, setLocale, t } from './i18n.js';
+
 const API = (window.FORUM_API || '').replace(/\/$/, '') + '/api';
 const view = document.getElementById('view');
 const crumbs = document.getElementById('crumbs');
@@ -23,32 +25,35 @@ let me = null;
 // ---------- утилиты ----------
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const pct = (a, b) => (b ? Math.floor((a / b) * 100) : 0);
+// Названия языков перевода игр (не языка интерфейса) — всегда самоназвания
 const LANG_NAMES = { ru: 'Русский', uk: 'Українська', be: 'Беларуская', kk: 'Қазақша', en: 'English', de: 'Deutsch', fr: 'Français', es: 'Español', pl: 'Polski' };
 const langName = (l) => LANG_NAMES[l] || l;
+const SITE = 'LocalizationForum';
+const docTitle = (...parts) => (document.title = [...parts.filter(Boolean), SITE].join(' · '));
 
 // ---------- уведомления и отмена последнего действия ----------
 const undoStack = []; // { label, run }
 
 function toast(msg, undo) {
-  const t = document.getElementById('toast');
-  t.innerHTML = `<span>${esc(msg)}</span>${undo ? `<button class="toast-undo" data-act="undo">Отменить <kbd>Ctrl+Z</kbd></button>` : ''}`;
+  const el = document.getElementById('toast');
+  el.innerHTML = `<span>${esc(msg)}</span>${undo ? `<button class="toast-undo" data-act="undo">${t('toast.undo')} <kbd>Ctrl+Z</kbd></button>` : ''}`;
   if (undo) {
     undoStack.push(undo);
     if (undoStack.length > 30) undoStack.shift();
   }
-  t.classList.add('show');
+  el.classList.add('show');
   clearTimeout(toast.t);
-  toast.t = setTimeout(() => t.classList.remove('show'), undo ? 6000 : 2800);
+  toast.t = setTimeout(() => el.classList.remove('show'), undo ? 6000 : 2800);
 }
 
 async function undoLast() {
   const u = undoStack.pop();
-  if (!u) return toast('Нечего отменять');
+  if (!u) return toast(t('undo.nothing'));
   try {
     await u.run();
-    toast(`Отменено: ${u.label}`);
+    toast(t('undo.done', { label: u.label }));
   } catch (err) {
-    toast(`Не удалось отменить: ${err.message}`);
+    toast(t('undo.failed', { error: err.message }));
   }
 }
 
@@ -59,7 +64,8 @@ async function refreshById(id) {
 }
 
 async function api(path, { method = 'GET', body } = {}) {
-  const headers = {};
+  // Accept-Language — на будущее: сервер пока отвечает по-русски
+  const headers = { 'Accept-Language': getLocale() };
   const token = store.get('token');
   if (token) headers.Authorization = `Bearer ${token}`;
   if (body !== undefined) headers['Content-Type'] = 'application/json';
@@ -67,11 +73,11 @@ async function api(path, { method = 'GET', body } = {}) {
   try {
     res = await fetch(API + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
   } catch {
-    throw Object.assign(new Error('Сервер недоступен. Чтение может работать, а голосование — нет.'), { status: 0 });
+    throw Object.assign(new Error(t('app.offline')), { status: 0 });
   }
   const data = await res.json().catch(() => ({}));
   if (res.status === 401 && token) { store.set('token', null); me = null; renderAccount(); }
-  if (!res.ok) throw Object.assign(new Error(data.error || `Ошибка ${res.status}`), { status: res.status, data });
+  if (!res.ok) throw Object.assign(new Error(data.error || t('app.error', { status: res.status })), { status: res.status, data });
   return data;
 }
 
@@ -93,22 +99,27 @@ async function loadMe() {
   try { me = (await api('/me')).user; } catch { me = null; }
 }
 
+const localeOptions = () => LOCALES.map(([c, n]) => `<option value="${c}" ${c === getLocale() ? 'selected' : ''}>${esc(n)}</option>`).join('');
+
 function renderAccount() {
   account.innerHTML = `
     ${me
       ? `${me.avatar_url ? `<img class="avatar" src="${esc(me.avatar_url)}&s=52" alt="">` : ''}<span>${esc(me.login)}</span>`
-      : `<button class="btn small primary" data-act="login">Войти через GitHub</button>`}
-    <button class="icon-btn" data-act="ui-menu" title="Настройки интерфейса" aria-label="Настройки интерфейса">⚙</button>
+      : `<button class="btn small primary" data-act="login">${t('account.login')}</button>`}
+    <select class="ui-lang" data-ui="lang" title="${esc(t('ui.language'))}" aria-label="${esc(t('ui.language'))}">${localeOptions()}</select>
+    <button class="icon-btn" data-act="ui-menu" title="${esc(t('ui.settings'))}" aria-label="${esc(t('ui.settings'))}">⚙</button>
     <div class="ui-menu" hidden>
-      <h3>Тема</h3>
+      <h3>${t('ui.language')}</h3>
+      <select data-ui="lang" aria-label="${esc(t('ui.language'))}">${localeOptions()}</select>
+      <h3>${t('ui.theme')}</h3>
       <div class="seg" data-ui="theme">
-        <button data-v="auto">Как в системе</button><button data-v="light">Светлая</button><button data-v="dark">Тёмная</button>
+        <button data-v="auto">${t('ui.theme.auto')}</button><button data-v="light">${t('ui.theme.light')}</button><button data-v="dark">${t('ui.theme.dark')}</button>
       </div>
-      <h3>Размер текста</h3>
+      <h3>${t('ui.textSize')}</h3>
       <div class="range-row"><span class="muted">A</span><input type="range" min="13" max="21" step="1" data-ui="size"><span style="font-size:1.3rem">A</span><b data-ui="size-val"></b></div>
-      <h3>Отмена действий</h3>
-      <p class="muted" style="margin:0;font-size:.87rem">Голоса, варианты и утверждения можно отменить кнопкой в уведомлении или <kbd>Ctrl+Z</kbd>.</p>
-      ${me ? `<a href="#/tokens">Токены и подключение MCP →</a><button class="btn small" data-act="logout">Выйти</button>` : ''}
+      <h3>${t('ui.undo')}</h3>
+      <p class="muted" style="margin:0;font-size:.87rem">${t('ui.undoHelp')}</p>
+      ${me ? `<a href="#/tokens">${t('ui.tokens')}</a><button class="btn small" data-act="logout">${t('account.logout')}</button>` : ''}
     </div>`;
   syncUiMenu();
 }
@@ -153,6 +164,19 @@ document.addEventListener('input', (e) => {
   applyUi();
 });
 
+// Смена языка интерфейса: без перезагрузки перерисовываем шапку и текущую страницу
+async function switchLocale(code) {
+  const menuOpen = account.querySelector('.ui-menu')?.hidden === false;
+  uiPrefs.locale = await setLocale(code);
+  applyUi();
+  renderAccount();
+  if (menuOpen) account.querySelector('.ui-menu').hidden = false;
+  await route();
+}
+document.addEventListener('change', (e) => {
+  if (e.target.matches?.('select[data-ui=lang]')) switchLocale(e.target.value);
+});
+
 // ---------- маршруты ----------
 function parseRoute() {
   const [path, qs] = (location.hash.slice(1) || '/').split('?');
@@ -178,14 +202,16 @@ async function route() {
   }
 }
 
+const gamesCrumb = () => `<a href="#/">${t('nav.games')}</a>`;
+
 // ---------- главная ----------
 async function renderHome() {
   crumbs.innerHTML = '';
-  document.title = 'LocalizationForum';
+  docTitle();
   const { games } = await api('/games');
-  const head = `<div class="page-head"><h1>Игры</h1><span class="spacer"></span><a class="btn" href="#/formats">Форматы файлов</a>${me ? `<a class="btn primary" href="#/new">+ Новая игра</a>` : `<button class="btn" data-act="login">Войдите, чтобы добавить игру</button>`}</div>`;
+  const head = `<div class="page-head"><h1>${t('home.title')}</h1><span class="spacer"></span><a class="btn" href="#/formats">${t('home.formats')}</a>${me ? `<a class="btn primary" href="#/new">${t('home.newGame')}</a>` : `<button class="btn" data-act="login">${t('home.loginToAdd')}</button>`}</div>`;
   if (!games.length) {
-    view.innerHTML = head + `<div class="empty">Пока нет ни одной игры.${me ? ' Добавьте первую — кнопка выше.' : ''}</div>`;
+    view.innerHTML = head + `<div class="empty">${t('home.empty')}${me ? ' ' + t('home.emptyAdd') : ''}</div>`;
     return;
   }
   view.innerHTML = head + `<div class="games">${games
@@ -193,41 +219,35 @@ async function renderHome() {
       (g) => `
       <section class="card">
         <h2>${esc(g.title)}</h2>
-        <div class="muted">${g.total} строк · ${esc(g.format)}${g.repo ? ` · <a href="https://github.com/${esc(g.repo)}" target="_blank" rel="noopener">${esc(g.repo)}</a>` : ''}</div>
+        <div class="muted">${t('home.strings', { n: g.total })} · ${esc(g.format)}${g.repo ? ` · <a href="https://github.com/${esc(g.repo)}" target="_blank" rel="noopener">${esc(g.repo)}</a>` : ''}</div>
         <div class="langs">${g.languages
           .map((l) => {
             const p = pct(g.approved[l] || 0, g.total);
             return `<a class="lang-row" href="${href(g.slug, l)}"><b>${esc(l)}</b><span class="bar"><i style="width:${p}%"></i></span><span class="pct">${p}%</span>${stageChip(g.status?.[l])}</a>`;
           })
           .join('')}</div>
-        ${g.repo ? `<div style="margin-top:10px"><a href="https://github.com/${esc(g.repo)}/releases" target="_blank" rel="noopener">Скачать релизы перевода →</a></div>` : ''}
+        ${g.repo ? `<div style="margin-top:10px"><a href="https://github.com/${esc(g.repo)}/releases" target="_blank" rel="noopener">${t('home.releases')}</a></div>` : ''}
       </section>`,
     )
     .join('')}</div>`;
 }
 
 // ---------- этапы перевода языка ----------
-const STAGES = [
-  ['open', 'Групповой перевод', 'Все предлагают варианты и голосуют'],
-  ['review', 'Апрув', 'Модераторы проверяют и утверждают; предлагать и голосовать могут только модераторы'],
-  ['done', 'Готово', 'Перевод завершён и закрыт для изменений'],
-];
-const stageInfo = (id) => STAGES.find((x) => x[0] === id) || STAGES[0];
-const stageChip = (id) => { const [k, t, d] = stageInfo(id); return `<span class="stage ${k}" title="${esc(d)}">${t}</span>`; };
+const STAGES = ['open', 'review', 'done'];
+/** [id, название, описание] на текущем языке интерфейса */
+const stageInfo = (id) => {
+  const k = STAGES.includes(id) ? id : STAGES[0];
+  return [k, t(`stage.${k}`), t(`stage.${k}.desc`)];
+};
+const stageChip = (id) => { const [k, title, d] = stageInfo(id); return `<span class="stage ${k}" title="${esc(d)}">${esc(title)}</span>`; };
 
 // ---------- страница перевода ----------
-const FILTERS = [
-  ['all', 'Все'],
-  ['untranslated', 'Без перевода'],
-  ['voting', 'Есть варианты'],
-  ['approved', 'Утверждено'],
-  ['stale', 'Устарело'],
-];
+const FILTERS = ['all', 'untranslated', 'voting', 'approved', 'stale'];
 
 let state = null; // { slug, lang, game, data, params }
 
 async function renderGame(slug, lang, q) {
-  const { game, stats, canManage, status, moderates } = await api(`/games/${encodeURIComponent(slug)}`);
+  const { game, stats, canManage, status, moderates, ban } = await api(`/games/${encodeURIComponent(slug)}`);
   if (!lang || !game.languages.includes(lang)) {
     location.replace(href(slug, game.languages[0]));
     return;
@@ -244,40 +264,44 @@ async function renderGame(slug, lang, q) {
   const canMod = !!moderates?.[lang];
   // Что можно делать на этом этапе (сервер проверяет то же самое)
   const can = { propose: stage === 'open' || (stage === 'review' && canMod), vote: stage === 'open' || (stage === 'review' && canMod), approve: stage !== 'done' && canMod };
-  state = { slug, lang, game, data, params, files: files.files, stage, can };
+  // Забаненный (в игре или на всём форуме) только читает — сервер проверяет то же самое
+  if (ban) can.propose = can.vote = can.approve = false;
+  state = { slug, lang, game, data, params, files: files.files, stage, can, ban, canManage };
   const st = stats.find((s) => s.lang === lang) || { approved: 0, stale: 0, voting: 0, total: 0 };
   state.st = st;
 
-  document.title = `${game.title} — ${langName(lang)} · LocalizationForum`;
-  crumbs.innerHTML = `<a href="#/">Игры</a> / ${esc(game.title)} / ${esc(langName(lang))}`;
+  docTitle(`${game.title} — ${langName(lang)}`);
+  crumbs.innerHTML = `${gamesCrumb()} / ${esc(game.title)} / ${esc(langName(lang))}`;
 
+  const settingsHref = `#/g/${encodeURIComponent(slug)}/settings`;
   const pages = Math.max(1, Math.ceil(data.total / data.pageSize));
   view.innerHTML = `
     <div class="layout">
       <aside class="side">${renderSide(files.files, st)}</aside>
       <section>
         <div class="stats">
-          <span>Переведено <b>${pct(st.approved, st.total)}%</b></span>
-          <span>Утверждено <b>${st.approved}</b></span>
-          <span>На голосовании <b>${st.voting}</b></span>
-          <span>Устарело <b>${st.stale}</b></span>
-          <span>Всего <b>${st.total}</b></span>
-          ${game.languages.length > 1 ? `<span>Язык: <select data-act="lang">${game.languages.map((l) => `<option value="${esc(l)}" ${l === lang ? 'selected' : ''}>${esc(langName(l))}</option>`).join('')}</select></span>` : ''}
+          <span>${t('game.translated')} <b>${pct(st.approved, st.total)}%</b></span>
+          <span>${t('game.approved')} <b>${st.approved}</b></span>
+          <span>${t('game.voting')} <b>${st.voting}</b></span>
+          <span>${t('game.stale')} <b>${st.stale}</b></span>
+          <span>${t('game.total')} <b>${st.total}</b></span>
+          ${game.languages.length > 1 ? `<span>${t('game.language')} <select data-act="lang">${game.languages.map((l) => `<option value="${esc(l)}" ${l === lang ? 'selected' : ''}>${esc(langName(l))}</option>`).join('')}</select></span>` : ''}
           <span class="spacer"></span>
-          ${st.approved ? `<button class="btn small" data-act="download" data-slug="${esc(slug)}" data-lang="${esc(lang)}">Скачать перевод .zip</button>` : ''}
-          ${canManage ? `<a class="btn small" href="#/g/${encodeURIComponent(slug)}/settings">Настройки игры</a>` : ''}
+          ${st.approved ? `<button class="btn small" data-act="download" data-slug="${esc(slug)}" data-lang="${esc(lang)}">${t('game.download')}</button>` : ''}
+          ${canManage ? `<a class="btn small" href="${settingsHref}">${t('game.settings')}</a>` : ''}
         </div>
         ${renderStageBanner(status?.[lang], canMod)}
-        ${!st.total ? `<div class="empty">В игре пока нет строк.${canManage ? ` Загрузите оригинальные файлы в <a href="#/g/${encodeURIComponent(slug)}/settings">настройках игры</a>.` : ''}</div>` : ''}
+        ${ban ? renderBanBanner(ban) : ''}
+        ${!st.total ? `<div class="empty">${t('game.noStrings')}${canManage ? ' ' + t('game.noStringsUpload', { href: settingsHref }) : ''}</div>` : ''}
         <div class="toolbar">
-          <nav class="tabs">${FILTERS.map(([id, name]) => `<a href="${href(slug, lang, { ...params, filter: id, page: 1 })}" class="${params.filter === id ? 'on' : ''}">${name}</a>`).join('')}</nav>
-          <input class="search" type="search" placeholder="Поиск по ключу, оригиналу или переводу" value="${esc(params.q)}" data-act="search">
+          <nav class="tabs">${FILTERS.map((id) => `<a href="${href(slug, lang, { ...params, filter: id, page: 1 })}" class="${params.filter === id ? 'on' : ''}">${t('filter.' + id)}</a>`).join('')}</nav>
+          <input class="search" type="search" placeholder="${esc(t('game.search'))}" value="${esc(params.q)}" data-act="search">
         </div>
-        ${data.strings.length ? data.strings.map(renderString).join('') : `<div class="empty">Ничего не найдено</div>`}
+        ${data.strings.length ? data.strings.map(renderString).join('') : `<div class="empty">${t('game.nothing')}</div>`}
         ${pages > 1 ? `<div class="pager">
-          ${params.page > 1 ? `<a class="btn" href="${href(slug, lang, { ...params, page: params.page - 1 })}">← Назад</a>` : ''}
+          ${params.page > 1 ? `<a class="btn" href="${href(slug, lang, { ...params, page: params.page - 1 })}">${t('game.prev')}</a>` : ''}
           <span class="muted">${params.page} / ${pages}</span>
-          ${params.page < pages ? `<a class="btn" href="${href(slug, lang, { ...params, page: params.page + 1 })}">Дальше →</a>` : ''}
+          ${params.page < pages ? `<a class="btn" href="${href(slug, lang, { ...params, page: params.page + 1 })}">${t('game.next')}</a>` : ''}
         </div>` : ''}
       </section>
     </div>`;
@@ -286,32 +310,56 @@ async function renderGame(slug, lang, q) {
 function renderStageBanner(info, canMod) {
   const cur = info?.status || 'open';
   const [, , desc] = stageInfo(cur);
-  const when = info?.updated_at ? ` · ${esc(info.by || '')} ${new Date(info.updated_at).toLocaleDateString()}` : '';
+  const when = info?.updated_at ? ` · ${esc(info.by || '')} ${new Date(info.updated_at).toLocaleDateString(getLocale())}` : '';
   const ctl = canMod
-    ? `<span class="spacer"></span><div class="seg" role="group" aria-label="Этап перевода">${STAGES.map(([k, t]) => `<button type="button" data-act="stage" data-v="${k}" class="${k === cur ? 'on' : ''}">${t}</button>`).join('')}</div>`
+    ? `<span class="spacer"></span><div class="seg" role="group" aria-label="${esc(t('stage.aria'))}">${STAGES.map((k) => `<button type="button" data-act="stage" data-v="${k}" class="${k === cur ? 'on' : ''}">${esc(stageInfo(k)[1])}</button>`).join('')}</div>`
     : '';
   return `<div class="stage-banner ${cur}">${stageChip(cur)}<span class="muted">${esc(desc)}${when}</span>${ctl}</div>`;
 }
 
+/** Плашка «вы заблокированы»: причина и срок. */
+function renderBanBanner(ban) {
+  const until = ban.until ? t('ban.until', { date: esc(new Date(ban.until).toLocaleString(getLocale())) }) : t('ban.forever');
+  return `<div class="stage-banner ban" role="alert"><b>${t(ban.game ? 'ban.game' : 'ban.global')}</b><span>${ban.reason ? t('ban.reason', { reason: esc(ban.reason) }) + ' · ' : ''}${until}</span><span class="muted">${t('ban.readOnly')}</span></div>`;
+}
+
+/** Достигнут ли лимит вариантов у строки для текущего пользователя (модераторы языка не ограничены). */
+function variantLimitHint(s) {
+  const L = state.data.limits;
+  if (!me || !L || state.data.canModerate) return '';
+  const mine = s.variants.filter((v) => v.author === me.login).length;
+  if (L.perUserString && mine >= L.perUserString) return t('limit.perUser', { n: L.perUserString });
+  if (L.perString && s.variants.length >= L.perString) return t('limit.perString', { n: L.perString });
+  return '';
+}
+
+const aiBadge = () => ` <span class="ai" title="${esc(t('str.aiTitle'))}">${t('str.ai')}</span>`;
+
 function renderString(s) {
   const mod = state.data.canModerate && state.can.approve;
   const { propose: canPropose, vote: canVote } = state.can;
+  const limitHint = canPropose ? variantLimitHint(s) : '';
+  const voteTitle = (v) => (state.ban ? t('str.banned') : canVote ? (v.mine ? t('str.unvote') : t('str.vote')) : t('str.voteClosed'));
+  // Управляющий игрой может забанить автора варианта (форма бана в настройках игры)
+  const banLink = (author) =>
+    state.canManage && me && author && author !== me.login
+      ? ` · <a class="link" href="#/g/${encodeURIComponent(state.slug)}/settings?ban=${encodeURIComponent(author)}" title="${esc(t('str.banTitle', { name: author }))}">${t('str.ban')}</a>`
+      : '';
   // Утверждённый вариант уже показан блоком «утверждено» — в списке его не дублируем
   const chosenVariant = s.stale ? null : s.variants.find((v) => v.id === s.approved_variant);
   const approved = s.approved_text != null
-    ? `<div class="approved ${s.stale ? 'stale' : ''}">${s.stale ? '<span class="badge">оригинал изменился</span>' : ''}<div class="atext">${esc(s.approved_text)}</div><span class="meta">утверждено${s.approved_by ? ` · ${esc(s.approved_by)}` : ''}${chosenVariant ? ` · автор ${esc(chosenVariant.author || 'аноним')}${chosenVariant.ai ? ' <span class="ai" title="Предложено ИИ-ассистентом через MCP от имени пользователя">ИИ</span>' : ''}${chosenVariant.votes ? ` · ▲ ${chosenVariant.votes}` : ''}` : ''}${mod ? ` · <button class="link" data-act="unapprove" data-id="${s.id}">снять</button>` : ''}</span></div>`
+    ? `<div class="approved ${s.stale ? 'stale' : ''}">${s.stale ? `<span class="badge">${t('str.sourceChanged')}</span>` : ''}<div class="atext">${esc(s.approved_text)}</div><span class="meta">${t('str.approved')}${s.approved_by ? ` · ${esc(s.approved_by)}` : ''}${chosenVariant ? ` · ${t('str.author', { name: esc(chosenVariant.author || t('str.anon')) })}${chosenVariant.ai ? aiBadge() : ''}${chosenVariant.votes ? ` · ▲ ${chosenVariant.votes}` : ''}` : ''}${mod ? ` · <button class="link" data-act="unapprove" data-id="${s.id}">${t('str.unapprove')}</button>` : ''}</span></div>`
     : '';
   const variants = s.variants
     .filter((v) => v !== chosenVariant)
     .map((v) => {
-      const chosen = false;
       const canDelete = me && state.stage !== 'done' && ((v.author === me.login && canPropose) || mod);
       return `<li class="variant">
-        <button class="vote ${v.mine ? 'mine' : ''}" data-act="vote" data-id="${v.id}" data-mine="${v.mine ? 1 : 0}" title="${canVote ? (v.mine ? 'Убрать голос' : 'Голосовать') : 'Голосование закрыто на этом этапе'}" ${canVote ? '' : 'disabled'}>▲<span>${v.votes}</span></button>
-        <div><div class="vtext ${chosen ? 'chosen' : ''}">${esc(v.text)}</div><div class="vmeta">${esc(v.author || 'аноним')}${v.ai ? ' <span class="ai" title="Предложено ИИ-ассистентом через MCP от имени пользователя">ИИ</span>' : ''}</div></div>
+        <button class="vote ${v.mine ? 'mine' : ''}" data-act="vote" data-id="${v.id}" data-mine="${v.mine ? 1 : 0}" title="${esc(voteTitle(v))}" ${canVote ? '' : 'disabled'}>▲<span>${v.votes}</span></button>
+        <div><div class="vtext">${esc(v.text)}</div><div class="vmeta">${esc(v.author || t('str.anon'))}${v.ai ? aiBadge() : ''}${banLink(v.author)}</div></div>
         <div class="vactions">
-          ${mod && !chosen ? `<button class="btn small" data-act="approve" data-id="${s.id}" data-variant="${v.id}">Утвердить</button>` : ''}
-          ${canDelete ? `<button class="link" data-act="delete" data-id="${v.id}" title="Удалить вариант">удалить</button>` : ''}
+          ${mod ? `<button class="btn small" data-act="approve" data-id="${s.id}" data-variant="${v.id}">${t('str.approve')}</button>` : ''}
+          ${canDelete ? `<button class="link" data-act="delete" data-id="${v.id}" title="${esc(t('str.deleteTitle'))}">${t('str.delete')}</button>` : ''}
         </div>
       </li>`;
     })
@@ -324,12 +372,12 @@ function renderString(s) {
     <div class="str-tr">
     ${approved}
     ${variants ? `<ul class="variants">${variants}</ul>` : ''}
-    ${canPropose || mod ? `<div class="propose">
-      <textarea rows="1" placeholder="${me ? 'Ваш вариант перевода' : 'Войдите, чтобы предложить вариант'}" data-act="draft" data-id="${s.id}" ${me ? '' : 'disabled'}></textarea>
+    ${limitHint && !mod ? `<p class="muted limit-hint">${limitHint}</p>` : canPropose || mod ? `<div class="propose">
+      <textarea rows="1" placeholder="${esc(me ? t('str.placeholder') : t('str.loginToPropose'))}" data-act="draft" data-id="${s.id}" ${me ? '' : 'disabled'}></textarea>
       <div class="propose-row" hidden>
-        ${canPropose ? `<button class="btn primary small" data-act="propose" data-id="${s.id}">Предложить</button>` : ''}
-        ${mod ? `<button class="btn small" data-act="approve-text" data-id="${s.id}">Утвердить этот текст</button>` : ''}
-        <button class="link" data-act="copy-source" data-id="${s.id}">вставить оригинал</button>
+        ${canPropose ? `<button class="btn primary small" data-act="propose" data-id="${s.id}">${t('str.propose')}</button>` : ''}
+        ${mod ? `<button class="btn small" data-act="approve-text" data-id="${s.id}">${t('str.approveText')}</button>` : ''}
+        <button class="link" data-act="copy-source" data-id="${s.id}">${t('str.copySource')}</button>
       </div>
       <ul class="issues"></ul>
     </div>` : ''}
@@ -338,7 +386,16 @@ function renderString(s) {
 }
 
 function showIssues(card, issues) {
-  card.querySelector('.issues').innerHTML = (issues || []).map((i) => `<li class="${i.level}">${esc(i.message)}</li>`).join('');
+  const box = card.querySelector('.issues');
+  if (box) box.innerHTML = (issues || []).map((i) => `<li class="${i.level}">${esc(i.message)}</li>`).join('');
+}
+
+/** Обновить кнопку голоса на месте. */
+function setVoteButton(btn, mine, votes) {
+  btn.classList.toggle('mine', mine);
+  btn.dataset.mine = mine ? '1' : '0';
+  btn.title = mine ? t('str.unvote') : t('str.vote');
+  btn.querySelector('span').textContent = votes;
 }
 
 // ---------- действия ----------
@@ -369,13 +426,25 @@ document.addEventListener('click', async (e) => {
       const mine = el.dataset.mine === '1';
       const vid = el.dataset.id;
       const r = await api(`/variants/${vid}/vote`, { method: mine ? 'DELETE' : 'POST' });
-      el.classList.toggle('mine', r.mine);
-      el.dataset.mine = r.mine ? '1' : '0';
-      el.querySelector('span').textContent = r.votes;
-      toast(r.mine ? 'Голос учтён' : 'Голос снят', {
-        label: r.mine ? 'голос' : 'снятие голоса',
+      // Голос за строку один: сервер снял голос с других вариантов (cleared)
+      const cleared = r.cleared || [];
+      setVoteButton(el, r.mine, r.votes);
+      for (const cid of cleared) {
+        const b = card.querySelector(`[data-act="vote"][data-id="${cid}"]`);
+        if (b) setVoteButton(b, false, Math.max(0, Number(b.querySelector('span').textContent) - 1));
+      }
+      // Снятый голос мог быть у утверждённого варианта (он показан отдельным блоком) — проще перерисовать строку
+      if (cleared.length) await refreshCard(card);
+      toast(r.mine ? t(cleared.length ? 'vote.moved' : 'vote.added') : t('vote.removed'), {
+        label: r.mine ? t('undo.vote') : t('undo.unvote'),
         run: async () => {
-          await api(`/variants/${vid}/vote`, { method: r.mine ? 'DELETE' : 'POST' });
+          if (r.mine) {
+            // Отмена голоса: снять новый и вернуть прежний, если был
+            await api(`/variants/${vid}/vote`, { method: 'DELETE' });
+            for (const cid of cleared) await api(`/variants/${cid}/vote`, { method: 'POST' });
+          } else {
+            await api(`/variants/${vid}/vote`, { method: 'POST' });
+          }
           await refreshById(sid);
         },
       });
@@ -383,8 +452,8 @@ document.addEventListener('click', async (e) => {
       const ta = card.querySelector('textarea');
       const text = ta.value;
       const r = await api(`/strings/${el.dataset.id}/variants`, { method: 'POST', body: { lang: L, text } });
-      toast(r.issues?.length ? 'Вариант добавлен, но есть замечания' : 'Вариант добавлен', {
-        label: 'добавление варианта',
+      toast(r.issues?.length ? t('variant.addedIssues') : t('variant.added'), {
+        label: t('undo.propose'),
         run: async () => {
           await api(`/variants/${r.id}`, { method: 'DELETE' });
           await refreshById(sid);
@@ -399,17 +468,17 @@ document.addEventListener('click', async (e) => {
     } else if (act === 'approve' || act === 'approve-text') {
       const body = act === 'approve' ? { lang: L, variantId: Number(el.dataset.variant) } : { lang: L, text: card.querySelector('textarea').value };
       await api(`/strings/${el.dataset.id}/approve`, { method: 'POST', body });
-      toast('Утверждено', { label: 'утверждение', run: restoreApproval });
+      toast(t('approve.done'), { label: t('undo.approve'), run: restoreApproval });
       await refreshCard(card);
     } else if (act === 'unapprove') {
       await api(`/strings/${el.dataset.id}/approve?lang=${encodeURIComponent(L)}`, { method: 'DELETE' });
-      toast('Утверждение снято', { label: 'снятие утверждения', run: restoreApproval });
+      toast(t('approve.removed'), { label: t('undo.unapprove'), run: restoreApproval });
       await refreshCard(card);
     } else if (act === 'delete') {
       const v = prev.variants.find((x) => x.id === Number(el.dataset.id));
       await api(`/variants/${el.dataset.id}`, { method: 'DELETE' });
-      toast('Вариант удалён', {
-        label: 'удаление варианта (голоса не вернутся)',
+      toast(t('variant.deleted'), {
+        label: t('undo.delete'),
         run: async () => {
           await api(`/strings/${sid}/variants`, { method: 'POST', body: { lang: L, text: v.text } });
           await refreshById(sid);
@@ -425,6 +494,8 @@ document.addEventListener('click', async (e) => {
     }
   } catch (err) {
     if (card && err.data?.issues) showIssues(card, err.data.issues);
+    // Лимиты (422/429) и баны (403) — показываем и под полем ввода, не только во всплывашке
+    else if (card && act === 'propose') showIssues(card, [{ level: 'error', message: err.message }]);
     toast(err.message);
   }
 });
@@ -484,7 +555,7 @@ document.addEventListener('click', async (e) => {
   const next = b.dataset.v;
   try {
     await setStage(next);
-    toast(`Этап: ${stageInfo(next)[1]}`, { label: 'смена этапа', run: () => setStage(prev) });
+    toast(t('stage.changed', { stage: stageInfo(next)[1] }), { label: t('undo.stage'), run: () => setStage(prev) });
   } catch (err) {
     toast(err.message);
   }
@@ -514,6 +585,8 @@ window.addEventListener('hashchange', () => {
   });
 });
 
+// Язык интерфейса: сохранённый выбор → язык браузера → английский
+uiPrefs.locale = await setLocale(detectLocale(uiPrefs.locale));
 await loadMe();
 renderAccount();
 route();
@@ -522,12 +595,7 @@ route();
 // Управление играми: создание, настройки, загрузка файлов, модераторы
 // ======================================================================
 
-const FORMAT_HINTS = {
-  rimworld: 'Папки вида Core/Keyed, Core/DefInjected/…, Royalty/… — как в Data/<DLC>/Languages/English',
-  json: 'Один или несколько .json файлов',
-  'json-nested': 'Один или несколько .json файлов; ключи хранятся через точку',
-  gunpoint: 'Папка Scripts с файлами .gpc. Переводятся только строки реплик, номера и пустые строки сохраняются',
-};
+const FORMAT_HINT_KEYS = ['rimworld', 'json', 'json-nested', 'gunpoint'];
 
 let formatsCache = null;
 async function loadFormats(force = false) {
@@ -536,23 +604,22 @@ async function loadFormats(force = false) {
 }
 const fmtInfo = (list, slug) => {
   const f = list.find((x) => x.slug === slug) || { slug, title: slug, extensions: [], kind: 'custom' };
-  return { ...f, name: f.title, ext: f.extensions, hint: FORMAT_HINTS[slug] || `Файлы ${f.extensions.join(', ')}` };
+  return { ...f, name: f.title, ext: f.extensions, hint: FORMAT_HINT_KEYS.includes(slug) ? t('fmt.hint.' + slug) : t('fmt.hint.default', { ext: f.extensions.join(', ') }) };
 };
-const KIND_TITLES = { builtin: 'Встроенные', preset: 'Готовые построчные', custom: 'Созданные пользователями' };
+const KINDS = ['builtin', 'preset', 'custom'];
+const kindTitle = (kind) => t('fmt.kind.' + kind);
 function formatOptions(list, selected) {
-  return Object.entries(KIND_TITLES)
-    .map(([kind, title]) => {
-      const items = list.filter((f) => f.kind === kind);
-      if (!items.length) return '';
-      return `<optgroup label="${title}">${items
-        .map((f) => `<option value="${esc(f.slug)}" ${f.slug === selected ? 'selected' : ''}>${esc(f.title)} (${esc(f.extensions.join(', '))})</option>`)
-        .join('')}</optgroup>`;
-    })
-    .join('');
+  return KINDS.map((kind) => {
+    const items = list.filter((f) => f.kind === kind);
+    if (!items.length) return '';
+    return `<optgroup label="${esc(kindTitle(kind))}">${items
+      .map((f) => `<option value="${esc(f.slug)}" ${f.slug === selected ? 'selected' : ''}>${esc(f.title)} (${esc(f.extensions.join(', '))})</option>`)
+      .join('')}</optgroup>`;
+  }).join('');
 }
 
-const slugify = (t) =>
-  t.toLowerCase()
+const slugify = (s) =>
+  s.toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 63);
@@ -560,28 +627,28 @@ const slugify = (t) =>
 const parseLangs = (v) => v.split(/[\s,;]+/).map((x) => x.trim()).filter(Boolean);
 
 async function renderNewGame() {
-  crumbs.innerHTML = `<a href="#/">Игры</a> / Новая игра`;
-  document.title = 'Новая игра · LocalizationForum';
+  crumbs.innerHTML = `${gamesCrumb()} / ${t('new.title')}`;
+  docTitle(t('new.title'));
   if (!me) {
-    view.innerHTML = `<div class="empty">Чтобы добавить игру, <button class="btn primary" data-act="login">войдите через GitHub</button></div>`;
+    view.innerHTML = `<div class="empty">${t('new.loginPrompt', { button: `<button class="btn primary" data-act="login">${t('new.loginButton')}</button>` })}</div>`;
     return;
   }
   const formats = await loadFormats(true);
   view.innerHTML = `
     <form class="panel form" data-form="new-game">
-      <h1>Новая игра</h1>
-      <label>Название<input name="title" required maxlength="200" placeholder="RimWorld" autocomplete="off"></label>
-      <label>Адрес на сайте<input name="slug" required pattern="[a-z0-9][a-z0-9\\-]{0,62}" placeholder="rimworld" autocomplete="off">
-        <small>Латиница в нижнем регистре, цифры и дефис. Потом не меняется.</small></label>
-      <label>Формат файлов<select name="format">${formatOptions(formats, 'rimworld')}</select>
-        <small>Нет нужного? <a href="#/formats">Опишите свой формат</a> — для построчных текстовых файлов это делается без программирования.</small></label>
+      <h1>${t('new.title')}</h1>
+      <label>${t('new.name')}<input name="title" required maxlength="200" placeholder="RimWorld" autocomplete="off"></label>
+      <label>${t('new.slug')}<input name="slug" required pattern="[a-z0-9][a-z0-9\\-]{0,62}" placeholder="rimworld" autocomplete="off">
+        <small>${t('new.slugHint')}</small></label>
+      <label>${t('new.format')}<select name="format">${formatOptions(formats, 'rimworld')}</select>
+        <small>${t('new.formatHint')}</small></label>
       <div class="row2">
-        <label>Язык оригинала<input name="sourceLang" value="en" required></label>
-        <label>Языки перевода<input name="languages" value="ru" required placeholder="ru, uk"><small>Коды через запятую: ru, uk, be, pt-BR</small></label>
+        <label>${t('new.sourceLang')}<input name="sourceLang" value="en" required></label>
+        <label>${t('new.languages')}<input name="languages" value="ru" required placeholder="ru, uk"><small>${t('new.languagesHint')}</small></label>
       </div>
-      <label>Репозиторий GitHub (необязательно)<input name="repo" placeholder="owner/name">
-        <small>Если перевод будет выгружаться в репо игры через Actions. Можно указать позже.</small></label>
-      <div class="actions"><button class="btn primary">Создать</button><a class="btn" href="#/">Отмена</a></div>
+      <label>${t('new.repo')}<input name="repo" placeholder="owner/name">
+        <small>${t('new.repoHint')}</small></label>
+      <div class="actions"><button class="btn primary">${t('new.create')}</button><a class="btn" href="#/">${t('common.cancel')}</a></div>
       <ul class="issues"></ul>
     </form>`;
   const form = view.querySelector('form');
@@ -605,7 +672,7 @@ async function renderNewGame() {
           repo: f.repo.value,
         },
       });
-      toast('Игра создана. Теперь загрузите оригинальные файлы.');
+      toast(t('new.created'));
       location.hash = `#/g/${encodeURIComponent(r.slug)}/settings`;
     } catch (err) {
       form.querySelector('.issues').innerHTML = `<li class="error">${esc(err.message)}</li>`;
@@ -614,93 +681,116 @@ async function renderNewGame() {
 }
 
 async function renderSettings(slug, q = new URLSearchParams()) {
-  const data = await api(`/games/${encodeURIComponent(slug)}/manage`);
+  const [data, { bans }] = await Promise.all([api(`/games/${encodeURIComponent(slug)}/manage`), api(`/games/${encodeURIComponent(slug)}/bans`)]);
   const { game, moderators, files, strings } = data;
+  const banDate = (d) => esc(new Date(d).toLocaleString(getLocale()));
   const formats = await loadFormats(true);
   const fmt = fmtInfo(formats, game.format);
-  crumbs.innerHTML = `<a href="#/">Игры</a> / <a href="#/g/${encodeURIComponent(slug)}">${esc(game.title)}</a> / Настройки`;
-  document.title = `Настройки — ${game.title} · LocalizationForum`;
+  crumbs.innerHTML = `${gamesCrumb()} / <a href="#/g/${encodeURIComponent(slug)}">${esc(game.title)}</a> / ${t('set.title')}`;
+  docTitle(t('set.docTitle', { game: game.title }));
   const langOptions = (withAll) =>
-    (withAll ? `<option value="*">все языки (управление игрой)</option>` : '') +
+    (withAll ? `<option value="*">${t('set.allLangs')}</option>` : '') +
     game.languages.map((l) => `<option value="${esc(l)}">${esc(l)} — ${esc(langName(l))}</option>`).join('');
 
   view.innerHTML = `
-    <div class="page-head"><h1>${esc(game.title)}</h1><a class="btn" href="#/g/${encodeURIComponent(slug)}">← К переводу</a></div>
+    <div class="page-head"><h1>${esc(game.title)}</h1><a class="btn" href="#/g/${encodeURIComponent(slug)}">${t('set.back')}</a></div>
     <div class="settings">
       <form class="panel form" data-form="settings">
-        <h2>Основное</h2>
-        <label>Название<input name="title" value="${esc(game.title)}" required maxlength="200"></label>
+        <h2>${t('set.main')}</h2>
+        <label>${t('new.name')}<input name="title" value="${esc(game.title)}" required maxlength="200"></label>
         <div class="row2">
-          <label>Языки перевода<input name="languages" value="${esc(game.languages.join(', '))}" required>
-            <small>Добавьте код через запятую. Если убрать язык, его переводы сохранятся, но будут скрыты.</small></label>
-          <label>Репозиторий GitHub<input name="repo" value="${esc(game.repo || '')}" placeholder="owner/name"></label>
+          <label>${t('new.languages')}<input name="languages" value="${esc(game.languages.join(', '))}" required>
+            <small>${t('set.languagesHint')}</small></label>
+          <label>${t('set.repo')}<input name="repo" value="${esc(game.repo || '')}" placeholder="owner/name"></label>
         </div>
-        ${strings ? `<p class="muted">Формат: ${esc(fmt.name)}</p>` : `<label>Формат файлов<select name="format">${formatOptions(formats, game.format)}</select><small>Можно сменить, пока не загружены исходники. <a href="#/formats">Свои форматы</a></small></label>`}
-        <p class="muted">Адрес: <span class="mono">${esc(game.slug)}</span> · оригинал: ${esc(game.source_lang)}</p>
-        <div class="actions"><button class="btn primary">Сохранить</button></div>
+        ${strings ? `<p class="muted">${t('set.formatIs', { name: esc(fmt.name) })}</p>` : `<label>${t('new.format')}<select name="format">${formatOptions(formats, game.format)}</select><small>${t('set.formatHint')}</small></label>`}
+        <p class="muted">${t('set.address', { slug: `<span class="mono">${esc(game.slug)}</span>`, lang: esc(game.source_lang) })}</p>
+        <div class="actions"><button class="btn primary">${t('common.save')}</button></div>
         <ul class="issues"></ul>
       </form>
 
       <form class="panel form" data-form="source">
-        <h2>Оригинальные файлы</h2>
-        <p class="muted">Сейчас: <b data-count="files">${files}</b> файлов, <b data-count="strings">${strings}</b> строк. ${esc(fmt.hint)}</p>
+        <h2>${t('set.source')}</h2>
+        <p class="muted">${t('set.sourceNow', { files: `<b data-count="files">${files}</b>`, strings: `<b data-count="strings">${strings}</b>` })} ${esc(fmt.hint)}</p>
         ${filePicker(fmt)}
-        <label class="check"><input type="checkbox" name="replace"> Это полный набор файлов: скрыть строки из файлов, которых нет в загрузке</label>
-        <div class="actions"><button class="btn primary">Загрузить</button>${files ? `<button type="button" class="btn" data-reparse title="Если формат изменили — заново разобрать уже загруженные оригиналы">Пересчитать строки по формату</button>` : ''}</div>
+        <label class="check"><input type="checkbox" name="replace"> ${t('set.replace')}</label>
+        <div class="actions"><button class="btn primary">${t('set.upload')}</button>${files ? `<button type="button" class="btn" data-reparse title="${esc(t('set.reparseTitle'))}">${t('set.reparse')}</button>` : ''}</div>
         <ul class="issues"></ul>
       </form>
 
       <form class="panel form" data-form="translation">
-        <h2>Импорт готового перевода</h2>
-        <p class="muted">Файлы перевода в том же формате и с теми же путями, что и оригинал. Строки станут утверждёнными.</p>
-        <label>Язык<select name="lang">${langOptions(false)}</select></label>
+        <h2>${t('set.import')}</h2>
+        <p class="muted">${t('set.importHelp')}</p>
+        <label>${t('set.lang')}<select name="lang">${langOptions(false)}</select></label>
         ${filePicker(fmt)}
-        <label class="check"><input type="checkbox" name="overwrite"> Перезаписать уже утверждённые строки</label>
-        <div class="actions"><button class="btn primary">Импортировать</button></div>
+        <label class="check"><input type="checkbox" name="overwrite"> ${t('set.overwrite')}</label>
+        <div class="actions"><button class="btn primary">${t('set.importBtn')}</button></div>
         <ul class="issues"></ul>
       </form>
 
       <form class="panel form accent" data-form="publish">
-        <h2>Опубликовать в GitHub</h2>
+        <h2>${t('set.publish')}</h2>
         ${publishResult(q.get('pub'))}
-        <p class="muted">Одним коммитом в <b>${game.repo ? esc(game.repo) : 'репозиторий из «Основного»'}</b>: оригиналы в <code>source/</code>, утверждённые переводы в <code>&lt;язык&gt;/</code>, <code>game.json</code>. Если репозитория нет — он будет создан (публичный, в вашем аккаунте или организации). GitHub один раз спросит разрешение на запись в публичные репозитории; токен не сохраняется.</p>
-        <label>Версия релиза (необязательно)<input name="version" placeholder="например 1.0" pattern="[0-9A-Za-z][0-9A-Za-z._\\-]{0,39}">
-          <small>Если указать — для каждого языка появится Release <code>&lt;язык&gt;-&lt;версия&gt;</code> с zip-архивом и списком переводчиков.</small></label>
-        <div class="actions"><button class="btn primary" ${game.repo ? '' : 'disabled'}>Опубликовать</button>${game.repo ? `<a href="https://github.com/${esc(game.repo)}" target="_blank" rel="noopener">Открыть репозиторий →</a>` : '<span class="muted">Сначала укажите репозиторий и сохраните</span>'}</div>
+        <p class="muted">${t('set.publishHelp', { repo: game.repo ? esc(game.repo) : t('set.publishRepoFallback') })}</p>
+        <label>${t('set.version')}<input name="version" placeholder="${esc(t('set.versionPh'))}" pattern="[0-9A-Za-z][0-9A-Za-z._\\-]{0,39}">
+          <small>${t('set.versionHint')}</small></label>
+        <div class="actions"><button class="btn primary" ${game.repo ? '' : 'disabled'}>${t('set.publishBtn')}</button>${game.repo ? `<a href="https://github.com/${esc(game.repo)}" target="_blank" rel="noopener">${t('set.openRepo')}</a>` : `<span class="muted">${t('set.repoFirst')}</span>`}</div>
         <ul class="issues"></ul>
       </form>
 
       <form class="panel form" data-form="moderators">
-        <h2>Модераторы</h2>
+        <h2>${t('set.mods')}</h2>
         <ul class="mods">${moderators
           .map(
             (m) => `<li><span>${m.avatar_url ? `<img class="avatar" src="${esc(m.avatar_url)}&s=40" alt="">` : ''}<b>${esc(m.login)}</b>
-              <span class="muted">${m.lang === '*' ? 'все языки, управление игрой' : esc(m.lang)}</span></span>
-              <button type="button" class="link" data-act="mod-remove" data-login="${esc(m.login)}" data-lang="${esc(m.lang)}">снять</button></li>`,
+              <span class="muted">${m.lang === '*' ? t('set.modAll') : esc(m.lang)}</span></span>
+              <button type="button" class="link" data-act="mod-remove" data-login="${esc(m.login)}" data-lang="${esc(m.lang)}">${t('common.remove')}</button></li>`,
           )
           .join('')}</ul>
         <div class="row2">
-          <label>Логин GitHub<input name="login" placeholder="nickname" required><small>Человек должен хотя бы раз войти на сайт.</small></label>
-          <label>Права<select name="lang">${langOptions(true)}</select></label>
+          <label>${t('set.login')}<input name="login" placeholder="nickname" required><small>${t('set.loginHint')}</small></label>
+          <label>${t('set.rights')}<select name="lang">${langOptions(true)}</select></label>
         </div>
-        <div class="actions"><button class="btn primary">Назначить</button></div>
+        <div class="actions"><button class="btn primary">${t('set.assign')}</button></div>
+        <ul class="issues"></ul>
+      </form>
+
+      <form class="panel form" data-form="bans">
+        <h2>${t('bans.title')}</h2>
+        <p class="muted">${t('bans.help')}</p>
+        ${bans.length ? `<ul class="mods">${bans
+          .map(
+            (b) => `<li><span><b>${esc(b.login)}</b>
+              <span class="muted">${esc(b.reason)} · ${b.until ? t('bans.until', { date: banDate(b.until) }) : t('bans.permanent')}${b.by ? ' · ' + t('bans.by', { name: esc(b.by) }) : ''}</span></span>
+              <button type="button" class="link" data-act="ban-remove" data-id="${b.id}">${t('bans.unban')}</button></li>`,
+          )
+          .join('')}</ul>` : `<p class="muted">${t('bans.none')}</p>`}
+        <div class="row2">
+          <label>${t('set.login')}<input name="login" placeholder="nickname" required value="${esc(q.get('ban') || '')}" autocomplete="off"></label>
+          <label>${t('bans.duration')}<select name="days">
+            <option value="1">${t('bans.d1')}</option><option value="7" selected>${t('bans.d7')}</option><option value="30">${t('bans.d30')}</option><option value="">${t('bans.forever')}</option>
+          </select></label>
+        </div>
+        <label>${t('bans.reason')}<input name="reason" required maxlength="500" placeholder="${esc(t('bans.reasonPh'))}"></label>
+        <label class="check"><input type="checkbox" name="purge"> ${t('bans.purge')}</label>
+        <div class="actions"><button class="btn bad">${t('bans.submit')}</button></div>
         <ul class="issues"></ul>
       </form>
 
       <form class="panel form" data-form="rules">
-        <h2>Правила проверки вариантов</h2>
-        <p class="muted">Для каждого языка — список регулярных выражений. Совпадение даёт предупреждение (warn) или запрещает отправку (error).</p>
+        <h2>${t('set.rules')}</h2>
+        <p class="muted">${t('set.rulesHelp')}</p>
         <textarea name="rules" class="mono" rows="8" spellcheck="false">${esc(JSON.stringify(game.rules && Object.keys(game.rules).length ? game.rules : { [game.languages[0]]: [{ pattern: '\\s-\\s', message: 'Между словами нужно длинное тире —', level: 'warn' }] }, null, 2))}</textarea>
-        <div class="actions"><button class="btn primary">Сохранить правила</button></div>
+        <div class="actions"><button class="btn primary">${t('set.rulesSave')}</button></div>
         <ul class="issues"></ul>
       </form>
 
       ${me?.is_admin ? `
       <form class="panel form danger" data-form="delete">
-        <h2>Удалить игру</h2>
-        <p class="muted">Удалятся все строки, варианты, голоса и утверждённые переводы. Отменить нельзя.</p>
-        <label><span>Введите адрес игры <b class="mono">${esc(game.slug)}</b> для подтверждения</span><input name="confirm" autocomplete="off"></label>
-        <div class="actions"><button class="btn bad">Удалить навсегда</button></div>
+        <h2>${t('set.delete')}</h2>
+        <p class="muted">${t('set.deleteHelp')}</p>
+        <label><span>${t('set.deleteConfirm', { slug: `<b class="mono">${esc(game.slug)}</b>` })}</span><input name="confirm" autocomplete="off"></label>
+        <div class="actions"><button class="btn bad">${t('set.deleteBtn')}</button></div>
         <ul class="issues"></ul>
       </form>` : ''}
     </div>`;
@@ -726,7 +816,7 @@ async function renderSettings(slug, q = new URLSearchParams()) {
   forms.settings.format?.addEventListener('change', async (e) => {
     try {
       await api(`/games/${encodeURIComponent(slug)}/settings`, { method: 'POST', body: { format: e.target.value } });
-      toast('Формат сохранён');
+      toast(t('set.formatSaved'));
       renderSettings(slug);
     } catch (err) {
       report(forms.settings, [['error', err.message]]);
@@ -738,18 +828,18 @@ async function renderSettings(slug, q = new URLSearchParams()) {
       method: 'POST',
       body: { title: f.title.value, languages: parseLangs(f.languages.value), repo: f.repo.value, format: f.format?.value },
     });
-    toast('Сохранено');
+    toast(t('common.saved'));
     renderSettings(slug);
   });
 
   onSubmit('source', async (f) => {
     const files = await collectFiles(f, fmt);
-    if (!files.length) throw new Error(`Не выбраны файлы ${fmt.ext.join(', ')}`);
+    if (!files.length) throw new Error(t('set.noFiles', { ext: fmt.ext.join(', ') }));
     const total = { added: 0, changed: 0, removed: 0, unchanged: 0 };
     const errors = [];
     const parts = batches(files);
     for (let i = 0; i < parts.length; i++) {
-      report(f, [['warn', `Загрузка… пачка ${i + 1} из ${parts.length}`]]);
+      report(f, [['warn', t('set.uploading', { i: i + 1, n: parts.length })]]);
       const last = i === parts.length - 1;
       const r = await api(`/games/${encodeURIComponent(slug)}/source`, {
         method: 'POST',
@@ -759,10 +849,10 @@ async function renderSettings(slug, q = new URLSearchParams()) {
       errors.push(...r.errors);
     }
     report(f, [
-      ['ok', `Готово: новых ${total.added}, изменено ${total.changed}, скрыто ${total.removed}, без изменений ${total.unchanged}`],
+      ['ok', t('set.uploadDone', total)],
       ...errors.map((e) => ['error', e]),
     ]);
-    toast('Исходники загружены');
+    toast(t('set.sourceUploaded'));
     const fresh = await api(`/games/${encodeURIComponent(slug)}/manage`);
     f.querySelector('[data-count=files]').textContent = fresh.files;
     f.querySelector('[data-count=strings]').textContent = fresh.strings;
@@ -773,7 +863,7 @@ async function renderSettings(slug, q = new URLSearchParams()) {
     busy(f, true);
     try {
       const r = await api(`/games/${encodeURIComponent(slug)}/reparse`, { method: 'POST' });
-      report(f, [['ok', `Пересчитано: новых ${r.added}, изменено ${r.changed}, скрыто ${r.removed}, без изменений ${r.unchanged}`]]);
+      report(f, [['ok', t('set.reparsed', r)]]);
       const fresh = await api(`/games/${encodeURIComponent(slug)}/manage`);
       f.querySelector('[data-count=strings]').textContent = fresh.strings;
     } catch (err) {
@@ -785,7 +875,7 @@ async function renderSettings(slug, q = new URLSearchParams()) {
 
   onSubmit('translation', async (f) => {
     const files = await collectFiles(f, fmt);
-    if (!files.length) throw new Error(`Не выбраны файлы ${fmt.ext.join(', ')}`);
+    if (!files.length) throw new Error(t('set.noFiles', { ext: fmt.ext.join(', ') }));
     const total = { imported: 0, skipped: 0, unknown: 0 };
     for (const part of batches(files)) {
       const r = await api(`/games/${encodeURIComponent(slug)}/translation`, {
@@ -794,7 +884,7 @@ async function renderSettings(slug, q = new URLSearchParams()) {
       });
       for (const k of Object.keys(total)) total[k] += r[k];
     }
-    report(f, [['ok', `Утверждено ${total.imported}, уже было ${total.skipped}, не найдено в оригинале ${total.unknown}`]]);
+    report(f, [['ok', t('set.imported', total)]]);
   });
 
   onSubmit('publish', async (f) => {
@@ -802,14 +892,29 @@ async function renderSettings(slug, q = new URLSearchParams()) {
       method: 'POST',
       body: { version: f.version.value.trim(), return: location.origin + location.pathname },
     });
-    report(f, [['warn', 'Переходим на GitHub для подтверждения…']]);
+    report(f, [['warn', t('set.toGithub')]]);
     location.href = r.url;
   });
   if (q.get('pub')) forms.publish.scrollIntoView({ block: 'center' });
 
+  onSubmit('bans', async (f) => {
+    const purge = f.purge.checked;
+    const r = await api(`/games/${encodeURIComponent(slug)}/bans`, {
+      method: 'POST',
+      body: { login: f.login.value.trim(), reason: f.reason.value.trim(), days: f.days.value ? Number(f.days.value) : undefined, purge },
+    });
+    toast(t('bans.done', { login: r.login }) + (purge ? ' · ' + t('bans.purged', r.purged) : ''));
+    renderSettings(slug);
+  });
+  // Пришли по ссылке «забанить» со страницы перевода — форма уже заполнена логином
+  if (q.get('ban')) {
+    forms.bans.scrollIntoView({ block: 'center' });
+    forms.bans.reason.focus();
+  }
+
   onSubmit('moderators', async (f) => {
     await api(`/games/${encodeURIComponent(slug)}/moderators`, { method: 'POST', body: { login: f.login.value, lang: f.lang.value } });
-    toast('Модератор назначен');
+    toast(t('set.modAssigned'));
     renderSettings(slug);
   });
 
@@ -818,16 +923,16 @@ async function renderSettings(slug, q = new URLSearchParams()) {
     try {
       rules = JSON.parse(f.rules.value || '{}');
     } catch (err) {
-      throw new Error('Это не JSON: ' + err.message);
+      throw new Error(t('set.notJson', { error: err.message }));
     }
     await api(`/games/${encodeURIComponent(slug)}/settings`, { method: 'POST', body: { rules } });
-    report(f, [['ok', 'Правила сохранены']]);
+    report(f, [['ok', t('set.rulesSaved')]]);
   });
 
   onSubmit('delete', async (f) => {
-    if (f.confirm.value.trim() !== game.slug) throw new Error('Адрес не совпадает');
+    if (f.confirm.value.trim() !== game.slug) throw new Error(t('set.slugMismatch'));
     await api(`/games/${encodeURIComponent(slug)}`, { method: 'DELETE' });
-    toast('Игра удалена');
+    toast(t('set.deleted'));
     location.hash = '#/';
   });
 }
@@ -835,12 +940,12 @@ async function renderSettings(slug, q = new URLSearchParams()) {
 function filePicker(fmt) {
   return `
     <div class="picker">
-      <label class="btn small">Выбрать файлы<input type="file" name="files" multiple accept="${fmt.ext.join(',')}" hidden></label>
-      <label class="btn small">Выбрать папку<input type="file" name="folder" webkitdirectory hidden></label>
-      <span class="muted picked">ничего не выбрано</span>
+      <label class="btn small">${t('pick.files')}<input type="file" name="files" multiple accept="${fmt.ext.join(',')}" hidden></label>
+      <label class="btn small">${t('pick.folder')}<input type="file" name="folder" webkitdirectory hidden></label>
+      <span class="muted picked">${t('pick.none')}</span>
     </div>
-    <label>Путь внутри оригинала (необязательно)<input name="prefix" placeholder="${fmt.ext.includes('.xml') ? 'Core/Keyed' : 'например locales'}">
-      <small>Добавляется перед путями файлов. Для папки берётся её внутренняя структура без имени самой папки.</small></label>`;
+    <label>${t('pick.prefix')}<input name="prefix" placeholder="${esc(fmt.ext.includes('.xml') ? 'Core/Keyed' : t('pick.prefixPh'))}">
+      <small>${t('pick.prefixHint')}</small></label>`;
 }
 
 // Подпись «выбрано N файлов» у пикера
@@ -850,7 +955,7 @@ document.addEventListener('change', (e) => {
   const form = input.closest('form');
   const n = [...form.querySelectorAll('.picker input[type=file]')].reduce((s, i) => s + i.files.length, 0);
   const label = form.querySelector('.picked');
-  if (label) label.textContent = n ? `выбрано файлов: ${n}` : 'ничего не выбрано';
+  if (label) label.textContent = n ? t('pick.count', { n }) : t('pick.none');
 });
 
 async function collectFiles(form, fmt) {
@@ -942,25 +1047,30 @@ function makeZip(files) {
 }
 
 document.addEventListener('click', async (e) => {
-  const el = e.target.closest('[data-act="download"], [data-act="mod-remove"]');
+  const el = e.target.closest('[data-act="download"], [data-act="mod-remove"], [data-act="ban-remove"]');
   if (!el) return;
   try {
     if (el.dataset.act === 'download') {
       el.disabled = true;
       const { slug, lang } = el.dataset;
       const r = await api(`/games/${encodeURIComponent(slug)}/export?lang=${encodeURIComponent(lang)}`);
-      if (!r.files.length) return toast('Утверждённых строк пока нет');
+      if (!r.files.length) return toast(t('dl.none'));
       const url = URL.createObjectURL(makeZip(r.files.map((f) => ({ path: `${lang}/${f.path}`, content: f.content }))));
       const a = Object.assign(document.createElement('a'), { href: url, download: `${slug}-${lang}.zip` });
       document.body.append(a);
       a.click();
       a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 10000);
-      toast(`Скачано: ${r.translated} из ${r.total} строк`);
+      toast(t('dl.done', { translated: r.translated, total: r.total }));
+    } else if (el.dataset.act === 'ban-remove') {
+      const slug = parseRoute().parts[1];
+      await api(`/games/${encodeURIComponent(slug)}/bans?id=${encodeURIComponent(el.dataset.id)}`, { method: 'DELETE' });
+      toast(t('bans.removed'));
+      renderSettings(slug);
     } else {
       const slug = parseRoute().parts[1];
       await api(`/games/${encodeURIComponent(slug)}/moderators`, { method: 'POST', body: { login: el.dataset.login, lang: el.dataset.lang, remove: true } });
-      toast('Права сняты');
+      toast(t('set.modRemoved'));
       renderSettings(slug);
     }
   } catch (err) {
@@ -972,34 +1082,20 @@ document.addEventListener('click', async (e) => {
 
 // ---------- форматы файлов: список и редактор ----------
 
-const CONFIG_HELP = `
-  <details class="help"><summary>Как описать формат</summary>
-  <p>Построчный формат описывается JSON-объектом. Файл перевода собирается поверх оригинала: меняется только найденный текст, всё остальное остаётся байт в байт.</p>
-  <ul>
-    <li><b>extensions</b> — расширения файлов: <code>[".gpc"]</code></li>
-    <li><b>mode</b> — <code>"lines"</code>: ключ строки = её номер в файле; <code>"keyValue"</code>: ключ берётся из группы <code>(?&lt;key&gt;…)</code></li>
-    <li><b>text</b> — регулярное выражение для строки, переводимая часть — группа <code>(?&lt;text&gt;…)</code>. По умолчанию: вся непустая строка (lines) или <code>key=value</code> (keyValue)</li>
-    <li><b>skip</b> — список выражений для строк, которые никогда не переводятся (пустые, номера…)</li>
-    <li><b>contextLine</b> — строка-заголовок с группой <code>(?&lt;label&gt;…)</code>: не переводится и показывается переводчикам как контекст следующих строк (имя говорящего, секция)</li>
-    <li><b>comment</b> — выражение для строк-комментариев</li>
-  </ul>
-  <p>Проверьте формат на настоящем файле: должно быть «собирается обратно без изменений».</p>
-  </details>`;
-
 async function renderFormats(slug, q) {
   const formats = await loadFormats(true);
-  crumbs.innerHTML = `<a href="#/">Игры</a> / <a href="#/formats">Форматы</a>${slug ? ' / ' + esc(slug) : ''}`;
-  document.title = 'Форматы файлов · LocalizationForum';
+  crumbs.innerHTML = `${gamesCrumb()} / <a href="#/formats">${t('fmt.crumb')}</a>${slug ? ' / ' + esc(slug === 'new' ? t('fmt.newTitle') : slug) : ''}`;
+  docTitle(t('fmt.title'));
   if (!slug) {
     view.innerHTML = `
-      <div class="page-head"><h1>Форматы файлов</h1>${me ? `<a class="btn primary" href="#/formats/new">+ Свой формат</a>` : ''}</div>
-      <p class="muted">Встроенные форматы разбирают сложные файлы (XML RimWorld, JSON). Построчные описываются данными — их может создать любой участник.</p>
+      <div class="page-head"><h1>${t('fmt.title')}</h1>${me ? `<a class="btn primary" href="#/formats/new">${t('fmt.new')}</a>` : ''}</div>
+      <p class="muted">${t('fmt.intro')}</p>
       <div class="formats">${formats
         .map(
           (f) => `<a class="card fmt" href="#/formats/${encodeURIComponent(f.slug)}">
             <b>${esc(f.title)}</b>
             <span class="muted mono">${esc(f.slug)} · ${esc(f.extensions.join(', '))}</span>
-            <span class="badge-kind ${f.kind}">${KIND_TITLES[f.kind]}${f.owner ? ' · ' + esc(f.owner) : ''}</span>
+            <span class="badge-kind ${f.kind}">${esc(kindTitle(f.kind))}${f.owner ? ' · ' + esc(f.owner) : ''}</span>
           </a>`,
         )
         .join('')}</div>`;
@@ -1008,33 +1104,33 @@ async function renderFormats(slug, q) {
 
   const isNew = slug === 'new';
   const base = isNew ? formats.find((f) => f.slug === (q.get('from') || 'plain-lines')) : formats.find((f) => f.slug === slug);
-  if (!isNew && !base) throw new Error('Формат не найден');
+  if (!isNew && !base) throw new Error(t('fmt.notFound'));
   const editable = isNew || (base.kind === 'custom' && me && (me.is_admin || base.owner === me.login));
   const lineBased = isNew || base.kind !== 'builtin';
   const config = base?.config ?? { extensions: ['.txt'], mode: 'lines', skip: ['^\\s*$'] };
 
   view.innerHTML = `
     <form class="panel form" data-form="format">
-      <div class="page-head"><h1>${isNew ? 'Новый формат' : esc(base.title)}</h1>
-        ${!isNew && lineBased && me ? `<a class="btn" href="#/formats/new?from=${encodeURIComponent(base.slug)}">Создать копию</a>` : ''}</div>
-      ${!isNew ? `<p class="muted">${KIND_TITLES[base.kind]} · <span class="mono">${esc(base.slug)}</span>${base.owner ? ' · автор ' + esc(base.owner) : ''}</p>` : ''}
-      ${!lineBased ? `<p>Это встроенный формат: он написан кодом и не редактируется. Расширения: ${esc(base.extensions.join(', '))}.</p>` : ''}
+      <div class="page-head"><h1>${isNew ? t('fmt.newTitle') : esc(base.title)}</h1>
+        ${!isNew && lineBased && me ? `<a class="btn" href="#/formats/new?from=${encodeURIComponent(base.slug)}">${t('fmt.copy')}</a>` : ''}</div>
+      ${!isNew ? `<p class="muted">${esc(kindTitle(base.kind))} · <span class="mono">${esc(base.slug)}</span>${base.owner ? ' · ' + t('fmt.byAuthor', { name: esc(base.owner) }) : ''}</p>` : ''}
+      ${!lineBased ? `<p>${t('fmt.builtinNote', { ext: esc(base.extensions.join(', ')) })}</p>` : ''}
       ${isNew ? `
         <div class="row2">
-          <label>Код<input name="slug" required pattern="[a-z0-9][a-z0-9\\-]{1,40}" placeholder="my-game-dialogs" autocomplete="off"><small>Латиница, цифры, дефис</small></label>
-          <label>Название<input name="title" required maxlength="120" placeholder="Диалоги My Game (.dlg)"></label>
+          <label>${t('fmt.code')}<input name="slug" required pattern="[a-z0-9][a-z0-9\\-]{1,40}" placeholder="my-game-dialogs" autocomplete="off"><small>${t('fmt.codeHint')}</small></label>
+          <label>${t('fmt.name')}<input name="title" required maxlength="120" placeholder="${esc(t('fmt.namePh'))}"></label>
         </div>
-        <label>На основе<select name="from">${formats
+        <label>${t('fmt.base')}<select name="from">${formats
           .filter((f) => f.kind !== 'builtin')
           .map((f) => `<option value="${esc(f.slug)}" ${f.slug === base?.slug ? 'selected' : ''}>${esc(f.title)}</option>`)
-          .join('')}</select></label>` : editable ? `<label>Название<input name="title" value="${esc(base.title)}" maxlength="120"></label>` : ''}
+          .join('')}</select></label>` : editable ? `<label>${t('fmt.name')}<input name="title" value="${esc(base.title)}" maxlength="120"></label>` : ''}
       ${lineBased ? `
-        <label>Описание формата (JSON)<textarea name="config" class="mono" rows="10" spellcheck="false" ${editable ? '' : 'readonly'}>${esc(JSON.stringify(config, null, 2))}</textarea></label>
-        ${CONFIG_HELP}` : ''}
-      <h2>Проверка на файле</h2>
-      <div class="picker"><label class="btn small">Выбрать файл<input type="file" name="sample" hidden></label><span class="muted picked-sample">файл не выбран</span></div>
+        <label>${t('fmt.config')}<textarea name="config" class="mono" rows="10" spellcheck="false" ${editable ? '' : 'readonly'}>${esc(JSON.stringify(config, null, 2))}</textarea></label>
+        ${t('fmt.help')}` : ''}
+      <h2>${t('fmt.test')}</h2>
+      <div class="picker"><label class="btn small">${t('fmt.pickFile')}<input type="file" name="sample" hidden></label><span class="muted picked-sample">${t('fmt.noFile')}</span></div>
       <div class="preview"></div>
-      ${editable ? `<div class="actions"><button class="btn primary">${isNew ? 'Создать формат' : 'Сохранить'}</button></div>` : ''}
+      ${editable ? `<div class="actions"><button class="btn primary">${isNew ? t('fmt.create') : t('common.save')}</button></div>` : ''}
       <ul class="issues"></ul>
     </form>`;
 
@@ -1044,7 +1140,7 @@ async function renderFormats(slug, q) {
     try {
       return JSON.parse(form.config.value);
     } catch (e) {
-      throw new Error('Описание — не JSON: ' + e.message);
+      throw new Error(t('fmt.notJson', { error: e.message }));
     }
   };
   form.from?.addEventListener('change', () => {
@@ -1057,20 +1153,20 @@ async function renderFormats(slug, q) {
   async function runPreview() {
     const box = form.querySelector('.preview');
     if (!sample) return;
-    if (!me) return (box.innerHTML = `<p class="muted">Войдите, чтобы проверить файл.</p>`);
+    if (!me) return (box.innerHTML = `<p class="muted">${t('fmt.loginToTest')}</p>`);
     try {
       const body = { path: sample.name, content: sample.content, ...(lineBased ? { config: readConfig() } : { format: base.slug }) };
       const r = await api('/formats/preview', { method: 'POST', body });
       box.innerHTML = `
         <ul class="issues">
-          <li class="${r.matches ? 'ok' : 'warn'}">${r.matches ? 'Расширение файла подходит' : 'Расширение файла не входит в extensions — при загрузке такой файл будет пропущен'}</li>
-          <li class="${r.count ? 'ok' : 'warn'}">Найдено строк для перевода: ${r.count}</li>
-          ${r.roundTrip === null ? '' : `<li class="${r.roundTrip ? 'ok' : 'error'}">${r.roundTrip ? 'Файл собирается обратно без изменений' : 'Файл НЕ собирается обратно байт в байт — проверьте выражения'}</li>`}
+          <li class="${r.matches ? 'ok' : 'warn'}">${r.matches ? t('fmt.extOk') : t('fmt.extBad')}</li>
+          <li class="${r.count ? 'ok' : 'warn'}">${t('fmt.found', { n: r.count })}</li>
+          ${r.roundTrip === null ? '' : `<li class="${r.roundTrip ? 'ok' : 'error'}">${r.roundTrip ? t('fmt.roundOk') : t('fmt.roundBad')}</li>`}
         </ul>
-        ${r.count ? `<table class="ptable"><thead><tr><th>Ключ</th><th>Контекст</th><th>Текст</th></tr></thead><tbody>${r.strings
+        ${r.count ? `<table class="ptable"><thead><tr><th>${t('fmt.colKey')}</th><th>${t('fmt.colContext')}</th><th>${t('fmt.colText')}</th></tr></thead><tbody>${r.strings
           .slice(0, 60)
           .map((x) => `<tr><td class="mono">${esc(x.key)}</td><td class="muted">${esc(x.context || '')}</td><td>${esc(x.source)}</td></tr>`)
-          .join('')}</tbody></table>${r.count > 60 ? `<p class="muted">…и ещё ${r.count - 60}</p>` : ''}` : ''}`;
+          .join('')}</tbody></table>${r.count > 60 ? `<p class="muted">${t('fmt.more', { n: r.count - 60 })}</p>` : ''}` : ''}`;
     } catch (e) {
       box.innerHTML = `<ul class="issues"><li class="error">${esc(e.message)}</li></ul>`;
     }
@@ -1082,10 +1178,10 @@ async function renderFormats(slug, q) {
     form.querySelector('.picked-sample').textContent = file.name;
     runPreview();
   });
-  let t;
+  let timer;
   form.config?.addEventListener('input', () => {
-    clearTimeout(t);
-    t = setTimeout(runPreview, 600);
+    clearTimeout(timer);
+    timer = setTimeout(runPreview, 600);
   });
 
   form.addEventListener('submit', async (e) => {
@@ -1094,11 +1190,11 @@ async function renderFormats(slug, q) {
       const config = readConfig();
       if (isNew) {
         await api('/formats', { method: 'POST', body: { slug: form.slug.value.trim(), title: form.title.value, config } });
-        toast('Формат создан');
+        toast(t('fmt.created'));
         location.hash = `#/formats/${encodeURIComponent(form.slug.value.trim())}`;
       } else {
         const r = await api(`/formats/${encodeURIComponent(base.slug)}`, { method: 'POST', body: { title: form.title?.value, config } });
-        report([['ok', 'Сохранено'], ...(r.games.length ? [['warn', `Формат используют игры: ${r.games.join(', ')}. Чтобы строки пересчитались, загрузите исходники заново.`]] : [])]);
+        report([['ok', t('common.saved')], ...(r.games.length ? [['warn', t('fmt.usedBy', { games: r.games.join(', ') })]] : [])]);
       }
     } catch (err) {
       report([['error', err.message]]);
@@ -1115,51 +1211,54 @@ function publishResult(raw) {
   } catch {
     return '';
   }
-  if (r.error) return `<ul class="issues"><li class="error">Публикация не удалась: ${esc(r.error)}</li></ul>`;
+  if (r.error) return `<ul class="issues"><li class="error">${t('pub.failed', { error: esc(r.error) })}</li></ul>`;
+  const link = (url, text) => `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(text)}</a>`;
   const parts = [
-    r.created ? `Создан репозиторий <a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.repo)}</a>.` : `Репозиторий <a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.repo)}</a>.`,
-    r.commit ? `Коммит <a href="${esc(r.url)}/commit/${esc(r.commit)}" target="_blank" rel="noopener">${esc(r.commit.slice(0, 7))}</a>, файлов: ${r.files}.` : 'Изменений нет — всё уже опубликовано.',
-    ...(r.releases || []).map((t) => `Релиз <a href="${esc(r.url)}/releases/tag/${esc(t)}" target="_blank" rel="noopener">${esc(t)}</a>.`),
+    t(r.created ? 'pub.created' : 'pub.repo', { link: link(r.url, r.repo) }),
+    r.commit ? t('pub.commit', { link: link(`${r.url}/commit/${r.commit}`, r.commit.slice(0, 7)), n: r.files }) : t('pub.noChanges'),
+    ...(r.releases || []).map((tag) => t('pub.release', { link: link(`${r.url}/releases/tag/${tag}`, tag) })),
   ];
-  return `<ul class="issues"><li class="ok">Опубликовано. ${parts.join(' ')}</li></ul>`;
+  return `<ul class="issues"><li class="ok">${t('pub.done')} ${parts.join(' ')}</li></ul>`;
 }
 
 // ---------- токены и подключение MCP ----------
 async function renderTokens() {
-  crumbs.innerHTML = `<a href="#/">Игры</a> / Токены и MCP`;
-  document.title = 'Токены и MCP · LocalizationForum';
+  crumbs.innerHTML = `${gamesCrumb()} / ${t('tok.title')}`;
+  docTitle(t('tok.title'));
   if (!me) {
-    view.innerHTML = `<div class="empty"><button class="btn primary" data-act="login">Войдите через GitHub</button></div>`;
+    view.innerHTML = `<div class="empty"><button class="btn primary" data-act="login">${t('account.login')}</button></div>`;
     return;
   }
   const { tokens } = await api('/tokens');
-  const mcpUrl = (window.FORUM_API || location.origin) .replace(/\/$/, '') + '/api/mcp';
+  const mcpUrl = (window.FORUM_API || location.origin).replace(/\/$/, '') + '/api/mcp';
+  const authHeader = `<code>Authorization: Bearer &lt;${esc(t('tok.tokenWord'))}&gt;</code>`;
+  const loc = getLocale();
   view.innerHTML = `
-    <div class="page-head"><h1>Токены и MCP</h1></div>
+    <div class="page-head"><h1>${t('tok.title')}</h1></div>
     <div class="settings">
       <section class="panel form">
-        <h2>Подключить к Claude</h2>
-        <p>MCP-сервер форума даёт ИИ-ассистенту инструменты: искать строки, предлагать переводы, голосовать и, если вы модератор, утверждать. Всё делается от вашего имени, а варианты получают значок <span class="ai">ИИ</span>.</p>
-        <div class="copy-row"><code>${esc(mcpUrl)}</code><button class="btn small" type="button" data-copy="${esc(mcpUrl)}">Копировать</button></div>
-        <p class="muted"><b>Claude (сайт, приложение, Cowork):</b> Настройки → Коннекторы → Добавить свой коннектор → вставьте адрес. При подключении откроется вход через GitHub и запрос разрешения — токен не нужен.</p>
-        <p class="muted"><b>Claude Code:</b> <code>claude mcp add --transport http localization-forum ${esc(mcpUrl)}</code> — вход тоже через браузер. Или с токеном: добавьте <code>--header "Authorization: Bearer &lt;токен&gt;"</code>.</p>
-        <p class="muted"><b>Cursor и другие:</b> URL сервера и заголовок <code>Authorization: Bearer &lt;токен&gt;</code>.</p>
+        <h2>${t('tok.connect')}</h2>
+        <p>${t('tok.intro', { ai: `<span class="ai">${t('str.ai')}</span>` })}</p>
+        <div class="copy-row"><code>${esc(mcpUrl)}</code><button class="btn small" type="button" data-copy="${esc(mcpUrl)}">${t('tok.copy')}</button></div>
+        <p class="muted">${t('tok.claudeApp')}</p>
+        <p class="muted">${t('tok.claudeCode', { cmd: `<code>claude mcp add --transport http localization-forum ${esc(mcpUrl)}</code>`, header: `<code>--header "Authorization: Bearer &lt;${esc(t('tok.tokenWord'))}&gt;"</code>` })}</p>
+        <p class="muted">${t('tok.others', { header: authHeader })}</p>
       </section>
       <form class="panel form" data-form="new-token">
-        <h2>Персональный токен</h2>
-        <p class="muted">Для клиентов, где нельзя войти через браузер. Токен даёт те же права, что и ваш аккаунт — не публикуйте его.</p>
-        <div class="row2"><label>Название<input name="name" placeholder="например, Cursor на ноутбуке" maxlength="100"></label><div class="actions" style="align-self:end"><button class="btn primary">Создать токен</button></div></div>
+        <h2>${t('tok.personal')}</h2>
+        <p class="muted">${t('tok.personalHelp')}</p>
+        <div class="row2"><label>${t('tok.name')}<input name="name" placeholder="${esc(t('tok.namePh'))}" maxlength="100"></label><div class="actions" style="align-self:end"><button class="btn primary">${t('tok.create')}</button></div></div>
         <div class="new-token"></div>
         <ul class="issues"></ul>
       </form>
       <section class="panel">
-        <h2>Выданные доступы</h2>
+        <h2>${t('tok.granted')}</h2>
         ${tokens.length ? `<ul class="mods">${tokens
           .map(
-            (t) => `<li><span><b>${esc(t.name)}</b><span class="muted">${t.kind === 'oauth' ? 'подключение OAuth' : 'персональный'} · создан ${new Date(t.created_at).toLocaleDateString('ru')}${t.last_used_at ? ' · использован ' + new Date(t.last_used_at).toLocaleString('ru') : ' · не использовался'}</span></span>
-            <button class="link" data-act="token-revoke" data-id="${t.id}">отозвать</button></li>`,
+            (tk) => `<li><span><b>${esc(tk.name)}</b><span class="muted">${tk.kind === 'oauth' ? t('tok.oauth') : t('tok.personalKind')} · ${t('tok.createdAt', { date: new Date(tk.created_at).toLocaleDateString(loc) })} · ${tk.last_used_at ? t('tok.usedAt', { date: new Date(tk.last_used_at).toLocaleString(loc) }) : t('tok.unused')}</span></span>
+            <button class="link" data-act="token-revoke" data-id="${tk.id}">${t('tok.revoke')}</button></li>`,
           )
-          .join('')}</ul>` : '<p class="muted">Пока нет.</p>'}
+          .join('')}</ul>` : `<p class="muted">${t('tok.none')}</p>`}
       </section>
     </div>`;
   const form = view.querySelector('[data-form=new-token]');
@@ -1167,7 +1266,7 @@ async function renderTokens() {
     e.preventDefault();
     try {
       const r = await api('/tokens', { method: 'POST', body: { name: form.name.value } });
-      form.querySelector('.new-token').innerHTML = `<div class="token-box"><code>${esc(r.token)}</code><button class="btn small" type="button" data-copy="${esc(r.token)}">Копировать</button></div><p class="muted">Скопируйте сейчас — повторно токен не показывается.</p>`;
+      form.querySelector('.new-token').innerHTML = `<div class="token-box"><code>${esc(r.token)}</code><button class="btn small" type="button" data-copy="${esc(r.token)}">${t('tok.copy')}</button></div><p class="muted">${t('tok.copyNow')}</p>`;
       form.name.value = '';
     } catch (err) {
       form.querySelector('.issues').innerHTML = `<li class="error">${esc(err.message)}</li>`;
@@ -1180,9 +1279,9 @@ document.addEventListener('click', async (e) => {
   if (copy) {
     try {
       await navigator.clipboard.writeText(copy.dataset.copy);
-      toast('Скопировано');
+      toast(t('copy.done'));
     } catch {
-      toast('Не удалось скопировать — выделите текст вручную');
+      toast(t('copy.failed'));
     }
     return;
   }
@@ -1190,7 +1289,7 @@ document.addEventListener('click', async (e) => {
   if (rev) {
     try {
       await api(`/tokens/${rev.dataset.id}`, { method: 'DELETE' });
-      toast('Доступ отозван');
+      toast(t('tok.revoked'));
       renderTokens();
     } catch (err) {
       toast(err.message);
@@ -1200,11 +1299,7 @@ document.addEventListener('click', async (e) => {
 
 
 // ---------- список файлов: сортировка как в таблице ----------
-const FILE_SORTS = [
-  ['name', 'Имя'],
-  ['done', 'Готово'],
-  ['total', 'Строк'],
-];
+const FILE_SORTS = ['name', 'done', 'total'];
 
 function sortFiles(list) {
   const { key = 'name', dir = 'asc' } = uiPrefs.fileSort || {};
@@ -1221,19 +1316,21 @@ function sortFiles(list) {
 function renderSide(files, st) {
   const { slug, lang, params } = state ?? {};
   const sort = uiPrefs.fileSort || { key: 'name', dir: 'asc' };
-  const head = `<div class="side-sort">${FILE_SORTS.map(
-    ([k, title]) => `<button type="button" data-act="file-sort" data-k="${k}" class="${sort.key === k ? 'on' : ''}" title="Сортировать: ${title.toLowerCase()}">${title}${sort.key === k ? (sort.dir === 'asc' ? ' ↑' : ' ↓') : ''}</button>`,
-  ).join('')}</div>`;
+  const head = `<div class="side-sort">${FILE_SORTS.map((k) => {
+    const title = t('side.sort.' + k);
+    return `<button type="button" data-act="file-sort" data-k="${k}" class="${sort.key === k ? 'on' : ''}" title="${esc(t('side.sort', { col: title }))}">${title}${sort.key === k ? (sort.dir === 'asc' ? ' ↑' : ' ↓') : ''}</button>`;
+  }).join('')}</div>`;
   // +N — строки, у которых есть предложенные варианты, но ещё нет утверждённого перевода
-  const plus = (n) => (n ? `<span class="vcount" title="Строк с вариантами без утверждения: ${n}">+${n}</span> ` : '');
-  const all = `<a href="${href(slug, lang, { ...params, file: '', page: 1 })}" class="${params.file ? '' : 'on'}"><span class="fname">Все файлы</span><small>${plus(st.voting)}${st.approved}/${st.total}</small></a>`;
+  const plus = (n) => (n ? `<span class="vcount" title="${esc(t('side.votingTitle', { n }))}">+${n}</span> ` : '');
+  const all = `<a href="${href(slug, lang, { ...params, file: '', page: 1 })}" class="${params.file ? '' : 'on'}"><span class="fname">${t('side.all')}</span><small>${plus(st.voting)}${st.approved}/${st.total}</small></a>`;
   const rows = sortFiles(files)
     .map((f) => {
       const i = f.file.lastIndexOf('/');
       const dir = i >= 0 ? f.file.slice(0, i + 1) : '';
       const p = f.total ? Math.round((f.approved / f.total) * 100) : 0;
       const pv = f.total ? Math.round(((f.voting || 0) / f.total) * 100) : 0;
-      return `<a href="${href(slug, lang, { ...params, file: f.file, page: 1 })}" class="${f.file === params.file ? 'on' : ''}" title="${esc(f.file)} — утверждено ${p}%${f.voting ? `, с вариантами ещё ${f.voting}` : ''}"><span class="fname">${dir ? `<span class="dir">${esc(dir)}</span>` : ''}${esc(f.file.slice(i + 1))}</span><small class="${f.approved === f.total ? 'done' : ''}">${plus(f.voting)}${f.approved}/${f.total}</small><i class="fbar" style="width:${p}%"></i>${pv ? `<i class="fbar vbar" style="left:${p}%;width:${pv}%"></i>` : ''}</a>`;
+      const title = t('side.fileTitle', { file: f.file, p }) + (f.voting ? t('side.fileVoting', { n: f.voting }) : '');
+      return `<a href="${href(slug, lang, { ...params, file: f.file, page: 1 })}" class="${f.file === params.file ? 'on' : ''}" title="${esc(title)}"><span class="fname">${dir ? `<span class="dir">${esc(dir)}</span>` : ''}${esc(f.file.slice(i + 1))}</span><small class="${f.approved === f.total ? 'done' : ''}">${plus(f.voting)}${f.approved}/${f.total}</small><i class="fbar" style="width:${p}%"></i>${pv ? `<i class="fbar vbar" style="left:${p}%;width:${pv}%"></i>` : ''}</a>`;
     })
     .join('');
   return head + all + rows;

@@ -296,3 +296,15 @@ input:focus, select:focus, textarea:focus { background: var(--panel); box-shadow
 .stage-banner .seg button { flex: none; padding: 0.35em 0.9em; font-size: 0.82rem; white-space: nowrap; }
 .lang-row .stage { justify-self: end; }
 .vote[disabled] { opacity: 0.5; cursor: default; }
+
+/* Язык интерфейса в шапке: компактный, без обводки, как остальные поля */
+.account select.ui-lang { width: auto; max-width: 9.5em; padding: 0.25em 0.5em; font-size: 0.87rem; background: var(--field); cursor: pointer; }
+@media (max-width: 760px) {
+  .account select.ui-lang { max-width: 7.5em; }
+}
+
+/* Бан и лимиты */
+.stage-banner.ban { background: var(--bad-soft); color: var(--bad); box-shadow: var(--shadow-soft), inset 4px 0 0 var(--bad); }
+.stage-banner.ban .muted { color: inherit; opacity: 0.8; }
+.limit-hint { margin: 8px 0 0; padding: 8px 12px; background: var(--warn-soft); color: var(--warn); font-size: 0.87rem; }
+.vmeta .link { font-size: inherit; }

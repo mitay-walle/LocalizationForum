@@ -14,6 +14,17 @@
       if (ui.theme === 'light' || ui.theme === 'dark') document.documentElement.dataset.theme = ui.theme;
       if (ui.size) document.documentElement.style.setProperty('--base-size', ui.size + 'px');
     } catch (e) {}
+    // Язык интерфейса (точно его выберет app.js / i18n.js) — здесь только чтобы «Загрузка…» была на нужном языке
+    try {
+      var loc = String((ui && ui.locale) || navigator.language || 'en').toLowerCase().split('-')[0];
+      var LOADING = { ru: 'Загрузка…', en: 'Loading…', uk: 'Завантаження…', de: 'Wird geladen…', es: 'Cargando…', fr: 'Chargement…', pt: 'Carregando…', pl: 'Ładowanie…', zh: '加载中…', ja: '読み込み中…' };
+      if (!LOADING[loc]) loc = 'en';
+      document.documentElement.lang = loc === 'pt' ? 'pt-BR' : loc;
+      document.addEventListener('DOMContentLoaded', function () {
+        var v = document.getElementById('view');
+        if (v) v.innerHTML = '<p class="muted">' + LOADING[loc] + '</p>';
+      });
+    } catch (e) {}
   </script>
   <script src="config.js"></script>
   <script type="module" src="app.js"></script>
