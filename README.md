@@ -30,6 +30,10 @@ GitHub Pages (site/)  ──чтение/запись──▶  Vercel Function 
 
 ## Добавить игру
 
+**С сайта** (проще): войти → «+ Новая игра» → указать название, формат и языки → в «Настройках игры» загрузить оригинальные файлы (файлы или целую папку). Там же: языки, импорт готового перевода, модераторы, правила проверок. Создатель игры получает права на все её языки. Скачать перевод .zip можно со страницы перевода.
+
+**Через репозиторий игры** (если перевод должен коммититься в GitHub и выходить релизами):
+
 1. Скопировать `game-template/` в новый репозиторий (например `<user>/rimworld-loc`), заполнить `game.json`, положить оригинал в `source/`.
 2. В репо игры: Variables → `FORUM_API_URL`, Secrets → `FORUM_SYNC_TOKEN` (= `SYNC_TOKEN` форума).
 3. Push → workflow **Import source** загрузит строки, игра появится на сайте.
@@ -65,5 +69,12 @@ npm run typecheck
 | POST/DELETE | `/api/variants/:id/vote` | вошедшие |
 | DELETE | `/api/variants/:id` | автор / модератор |
 | POST/DELETE | `/api/strings/:id/approve` `{lang, variantId \| text}` | модератор |
+| POST | `/api/games` `{slug, title, format, sourceLang, languages, repo?}` | вошедшие (создатель → модератор `*`) |
+| GET | `/api/games/:slug/manage` | модератор `*` / админ |
+| POST | `/api/games/:slug/settings` `{title?, languages?, repo?, rules?}` | модератор `*` / админ |
+| POST | `/api/games/:slug/source` `{files, paths?}` | модератор `*` / админ |
+| POST | `/api/games/:slug/translation` `{lang, files, overwrite?}` | модератор `*` / админ |
+| POST | `/api/games/:slug/moderators` `{login, lang, remove?}` | модератор `*` / админ |
+| DELETE | `/api/games/:slug` | администратор |
 | POST | `/api/admin/moderators` | администратор |
 | POST | `/api/admin/import`, `/api/admin/import/finish` | Actions репо игры (`X-Sync-Token`) |
