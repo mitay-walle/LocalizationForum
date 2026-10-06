@@ -26,12 +26,36 @@ const pct = (a, b) => (b ? Math.floor((a / b) * 100) : 0);
 const LANG_NAMES = { ru: 'Русский', uk: 'Українська', be: 'Беларуская', kk: 'Қазақша', en: 'English', de: 'Deutsch', fr: 'Français', es: 'Español', pl: 'Polski' };
 const langName = (l) => LANG_NAMES[l] || l;
 
-function toast(msg) {
+// ---------- уведомления и отмена последнего действия ----------
+const undoStack = []; // { label, run }
+
+function toast(msg, undo) {
   const t = document.getElementById('toast');
-  t.textContent = msg;
+  t.innerHTML = `<span>${esc(msg)}</span>${undo ? `<button class="toast-undo" data-act="undo">Отменить <kbd>Ctrl+Z</kbd></button>` : ''}`;
+  if (undo) {
+    undoStack.push(undo);
+    if (undoStack.length > 30) undoStack.shift();
+  }
   t.classList.add('show');
   clearTimeout(toast.t);
-  toast.t = setTimeout(() => t.classList.remove('show'), 2800);
+  toast.t = setTimeout(() => t.classList.remove('show'), undo ? 6000 : 2800);
+}
+
+async function undoLast() {
+  const u = undoStack.pop();
+  if (!u) return toast('Нечего отменять');
+  try {
+    await u.run();
+    toast(`Отменено: ${u.label}`);
+  } catch (err) {
+    toast(`Не удалось отменить: ${err.message}`);
+  }
+}
+
+/** Перерисовать строку по id, если она на экране. */
+async function refreshById(id) {
+  const card = document.querySelector(`[data-string="${id}"]`);
+  if (card) await refreshCard(card);
 }
 
 async function api(path, { method = 'GET', body } = {}) {
@@ -70,15 +94,64 @@ async function loadMe() {
 }
 
 function renderAccount() {
-  if (me) {
-    account.innerHTML = `
-      ${me.avatar_url ? `<img class="avatar" src="${esc(me.avatar_url)}&s=52" alt="">` : ''}
-      <span>${esc(me.login)}</span>
-      <button class="btn small" data-act="logout">Выйти</button>`;
-  } else {
-    account.innerHTML = `<button class="btn small primary" data-act="login">Войти через GitHub</button>`;
-  }
+  account.innerHTML = `
+    ${me
+      ? `${me.avatar_url ? `<img class="avatar" src="${esc(me.avatar_url)}&s=52" alt="">` : ''}<span>${esc(me.login)}</span>`
+      : `<button class="btn small primary" data-act="login">Войти через GitHub</button>`}
+    <button class="icon-btn" data-act="ui-menu" title="Настройки интерфейса" aria-label="Настройки интерфейса">⚙</button>
+    <div class="ui-menu" hidden>
+      <h3>Тема</h3>
+      <div class="seg" data-ui="theme">
+        <button data-v="auto">Как в системе</button><button data-v="light">Светлая</button><button data-v="dark">Тёмная</button>
+      </div>
+      <h3>Размер текста</h3>
+      <div class="range-row"><span class="muted">A</span><input type="range" min="13" max="21" step="1" data-ui="size"><span style="font-size:1.3rem">A</span><b data-ui="size-val"></b></div>
+      <h3>Отмена действий</h3>
+      <p class="muted" style="margin:0;font-size:.87rem">Голоса, варианты и утверждения можно отменить кнопкой в уведомлении или <kbd>Ctrl+Z</kbd>.</p>
+      ${me ? `<a href="#/tokens">Токены и подключение MCP →</a><button class="btn small" data-act="logout">Выйти</button>` : ''}
+    </div>`;
+  syncUiMenu();
 }
+
+// ---------- настройки интерфейса (хранятся в браузере) ----------
+const uiPrefs = (() => {
+  try {
+    return JSON.parse(localStorage.getItem('ui') || '{}');
+  } catch {
+    return {};
+  }
+})();
+function applyUi() {
+  const root = document.documentElement;
+  if (uiPrefs.theme === 'light' || uiPrefs.theme === 'dark') root.dataset.theme = uiPrefs.theme;
+  else delete root.dataset.theme;
+  root.style.setProperty('--base-size', (uiPrefs.size || 15) + 'px');
+  store.set('ui', JSON.stringify(uiPrefs));
+  syncUiMenu();
+}
+function syncUiMenu() {
+  const menu = account.querySelector('.ui-menu');
+  if (!menu) return;
+  menu.querySelectorAll('[data-ui=theme] button').forEach((b) => b.classList.toggle('on', b.dataset.v === (uiPrefs.theme || 'auto')));
+  menu.querySelector('[data-ui=size]').value = uiPrefs.size || 15;
+  menu.querySelector('[data-ui=size-val]').textContent = (uiPrefs.size || 15) + ' px';
+}
+document.addEventListener('click', (e) => {
+  const menu = account.querySelector('.ui-menu');
+  if (!menu) return;
+  if (e.target.closest('[data-act=ui-menu]')) menu.hidden = !menu.hidden;
+  else if (!e.target.closest('.ui-menu')) menu.hidden = true;
+  const tb = e.target.closest('[data-ui=theme] button');
+  if (tb) {
+    uiPrefs.theme = tb.dataset.v === 'auto' ? undefined : tb.dataset.v;
+    applyUi();
+  }
+});
+document.addEventListener('input', (e) => {
+  if (!e.target.matches?.('[data-ui=size]')) return;
+  uiPrefs.size = Number(e.target.value);
+  applyUi();
+});
 
 // ---------- маршруты ----------
 function parseRoute() {
@@ -96,7 +169,8 @@ async function route() {
   try {
     if (parts[0] === 'new') await renderNewGame();
     else if (parts[0] === 'formats') await renderFormats(parts[1], q);
-    else if (parts[0] === 'g' && parts[1] && parts[2] === 'settings') await renderSettings(parts[1]);
+    else if (parts[0] === 'tokens') await renderTokens();
+    else if (parts[0] === 'g' && parts[1] && parts[2] === 'settings') await renderSettings(parts[1], q);
     else if (parts[0] === 'g' && parts[1]) await renderGame(parts[1], parts[2], q);
     else await renderHome();
   } catch (e) {
@@ -210,7 +284,7 @@ function renderString(s) {
       const canDelete = me && (v.author === me.login || mod);
       return `<li class="variant">
         <button class="vote ${v.mine ? 'mine' : ''}" data-act="vote" data-id="${v.id}" data-mine="${v.mine ? 1 : 0}" title="${v.mine ? 'Убрать голос' : 'Голосовать'}">▲<span>${v.votes}</span></button>
-        <div><div class="vtext ${chosen ? 'chosen' : ''}">${esc(v.text)}</div><div class="vmeta">${esc(v.author || 'аноним')}</div></div>
+        <div><div class="vtext ${chosen ? 'chosen' : ''}">${esc(v.text)}</div><div class="vmeta">${esc(v.author || 'аноним')}${v.ai ? ' <span class="ai" title="Предложено ИИ-ассистентом через MCP от имени пользователя">ИИ</span>' : ''}</div></div>
         <div class="vactions">
           ${mod && !chosen ? `<button class="btn small" data-act="approve" data-id="${s.id}" data-variant="${v.id}">Утвердить</button>` : ''}
           ${canDelete ? `<button class="link" data-act="delete" data-id="${v.id}" title="Удалить вариант">удалить</button>` : ''}
@@ -249,35 +323,71 @@ document.addEventListener('click', async (e) => {
   const act = el.dataset.act;
   if (act === 'login') return login();
   if (act === 'logout') return logout();
+  if (act === 'undo') return undoLast();
   if (['vote', 'propose', 'approve', 'approve-text', 'unapprove', 'delete', 'copy-source'].includes(act) && !me) return login();
   const card = el.closest('[data-string]');
   try {
+    const sid = card ? Number(card.dataset.string) : null;
+    const prev = sid ? { ...state.data.strings.find((x) => x.id === sid) } : null;
+    const L = lang();
+    // Вернуть утверждение строки к состоянию prev
+    const restoreApproval = async () => {
+      if (prev.approved_text == null) await api(`/strings/${sid}/approve?lang=${encodeURIComponent(L)}`, { method: 'DELETE' });
+      else if (prev.approved_variant && prev.variants.some((v) => v.id === prev.approved_variant))
+        await api(`/strings/${sid}/approve`, { method: 'POST', body: { lang: L, variantId: prev.approved_variant } });
+      else await api(`/strings/${sid}/approve`, { method: 'POST', body: { lang: L, text: prev.approved_text } });
+      await refreshById(sid);
+    };
     if (act === 'vote') {
       const mine = el.dataset.mine === '1';
-      const r = await api(`/variants/${el.dataset.id}/vote`, { method: mine ? 'DELETE' : 'POST' });
+      const vid = el.dataset.id;
+      const r = await api(`/variants/${vid}/vote`, { method: mine ? 'DELETE' : 'POST' });
       el.classList.toggle('mine', r.mine);
       el.dataset.mine = r.mine ? '1' : '0';
       el.querySelector('span').textContent = r.votes;
+      toast(r.mine ? 'Голос учтён' : 'Голос снят', {
+        label: r.mine ? 'голос' : 'снятие голоса',
+        run: async () => {
+          await api(`/variants/${vid}/vote`, { method: r.mine ? 'DELETE' : 'POST' });
+          await refreshById(sid);
+        },
+      });
     } else if (act === 'propose') {
-      const text = card.querySelector('textarea').value;
-      const r = await api(`/strings/${el.dataset.id}/variants`, { method: 'POST', body: { lang: lang(), text } });
-      toast(r.issues?.length ? 'Вариант добавлен, но есть замечания' : 'Вариант добавлен');
+      const ta = card.querySelector('textarea');
+      const text = ta.value;
+      const r = await api(`/strings/${el.dataset.id}/variants`, { method: 'POST', body: { lang: L, text } });
+      toast(r.issues?.length ? 'Вариант добавлен, но есть замечания' : 'Вариант добавлен', {
+        label: 'добавление варианта',
+        run: async () => {
+          await api(`/variants/${r.id}`, { method: 'DELETE' });
+          await refreshById(sid);
+          const t2 = document.querySelector(`[data-string="${sid}"] textarea`);
+          if (t2) {
+            t2.value = text;
+            t2.dispatchEvent(new Event('input', { bubbles: true }));
+          }
+        },
+      });
       await refreshCard(card);
-    } else if (act === 'approve') {
-      await api(`/strings/${el.dataset.id}/approve`, { method: 'POST', body: { lang: lang(), variantId: Number(el.dataset.variant) } });
-      toast('Утверждено');
-      await refreshCard(card);
-    } else if (act === 'approve-text') {
-      const text = card.querySelector('textarea').value;
-      await api(`/strings/${el.dataset.id}/approve`, { method: 'POST', body: { lang: lang(), text } });
-      toast('Утверждено');
+    } else if (act === 'approve' || act === 'approve-text') {
+      const body = act === 'approve' ? { lang: L, variantId: Number(el.dataset.variant) } : { lang: L, text: card.querySelector('textarea').value };
+      await api(`/strings/${el.dataset.id}/approve`, { method: 'POST', body });
+      toast('Утверждено', { label: 'утверждение', run: restoreApproval });
       await refreshCard(card);
     } else if (act === 'unapprove') {
-      await api(`/strings/${el.dataset.id}/approve?lang=${encodeURIComponent(lang())}`, { method: 'DELETE' });
-      toast('Утверждение снято');
+      await api(`/strings/${el.dataset.id}/approve?lang=${encodeURIComponent(L)}`, { method: 'DELETE' });
+      toast('Утверждение снято', { label: 'снятие утверждения', run: restoreApproval });
       await refreshCard(card);
     } else if (act === 'delete') {
+      const v = prev.variants.find((x) => x.id === Number(el.dataset.id));
       await api(`/variants/${el.dataset.id}`, { method: 'DELETE' });
+      toast('Вариант удалён', {
+        label: 'удаление варианта (голоса не вернутся)',
+        run: async () => {
+          await api(`/strings/${sid}/variants`, { method: 'POST', body: { lang: L, text: v.text } });
+          await refreshById(sid);
+        },
+      });
       await refreshCard(card);
     } else if (act === 'copy-source') {
       const s = state.data.strings.find((x) => x.id === Number(el.dataset.id));
@@ -323,6 +433,12 @@ document.addEventListener('input', (e) => {
 });
 
 document.addEventListener('keydown', (e) => {
+  const typing = e.target.closest?.('input, textarea, select, [contenteditable]');
+  if (!typing && (e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z') {
+    e.preventDefault();
+    undoLast();
+    return;
+  }
   if (e.target.matches?.('textarea[data-act="draft"]') && e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
     e.preventDefault();
     e.target.closest('[data-string]').querySelector('[data-act="propose"]').click();
@@ -452,7 +568,7 @@ async function renderNewGame() {
   });
 }
 
-async function renderSettings(slug) {
+async function renderSettings(slug, q = new URLSearchParams()) {
   const data = await api(`/games/${encodeURIComponent(slug)}/manage`);
   const { game, moderators, files, strings } = data;
   const formats = await loadFormats(true);
@@ -496,6 +612,16 @@ async function renderSettings(slug) {
         ${filePicker(fmt)}
         <label class="check"><input type="checkbox" name="overwrite"> Перезаписать уже утверждённые строки</label>
         <div class="actions"><button class="btn primary">Импортировать</button></div>
+        <ul class="issues"></ul>
+      </form>
+
+      <form class="panel form accent" data-form="publish">
+        <h2>Опубликовать в GitHub</h2>
+        ${publishResult(q.get('pub'))}
+        <p class="muted">Одним коммитом в <b>${game.repo ? esc(game.repo) : 'репозиторий из «Основного»'}</b>: оригиналы в <code>source/</code>, утверждённые переводы в <code>&lt;язык&gt;/</code>, <code>game.json</code>. Если репозитория нет — он будет создан (публичный, в вашем аккаунте или организации). GitHub один раз спросит разрешение на запись в публичные репозитории; токен не сохраняется.</p>
+        <label>Версия релиза (необязательно)<input name="version" placeholder="например 1.0" pattern="[0-9A-Za-z][0-9A-Za-z._\\-]{0,39}">
+          <small>Если указать — для каждого языка появится Release <code>&lt;язык&gt;-&lt;версия&gt;</code> с zip-архивом и списком переводчиков.</small></label>
+        <div class="actions"><button class="btn primary" ${game.repo ? '' : 'disabled'}>Опубликовать</button>${game.repo ? `<a href="https://github.com/${esc(game.repo)}" target="_blank" rel="noopener">Открыть репозиторий →</a>` : '<span class="muted">Сначала укажите репозиторий и сохраните</span>'}</div>
         <ul class="issues"></ul>
       </form>
 
@@ -610,6 +736,16 @@ async function renderSettings(slug) {
     }
     report(f, [['ok', `Утверждено ${total.imported}, уже было ${total.skipped}, не найдено в оригинале ${total.unknown}`]]);
   });
+
+  onSubmit('publish', async (f) => {
+    const r = await api(`/games/${encodeURIComponent(slug)}/publish/start`, {
+      method: 'POST',
+      body: { version: f.version.value.trim(), return: location.origin + location.pathname },
+    });
+    report(f, [['warn', 'Переходим на GitHub для подтверждения…']]);
+    location.href = r.url;
+  });
+  if (q.get('pub')) forms.publish.scrollIntoView({ block: 'center' });
 
   onSubmit('moderators', async (f) => {
     await api(`/games/${encodeURIComponent(slug)}/moderators`, { method: 'POST', body: { login: f.login.value, lang: f.lang.value } });
@@ -909,3 +1045,95 @@ async function renderFormats(slug, q) {
     }
   });
 }
+
+
+function publishResult(raw) {
+  if (!raw) return '';
+  let r;
+  try {
+    r = JSON.parse(raw);
+  } catch {
+    return '';
+  }
+  if (r.error) return `<ul class="issues"><li class="error">Публикация не удалась: ${esc(r.error)}</li></ul>`;
+  const parts = [
+    r.created ? `Создан репозиторий <a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.repo)}</a>.` : `Репозиторий <a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.repo)}</a>.`,
+    r.commit ? `Коммит <a href="${esc(r.url)}/commit/${esc(r.commit)}" target="_blank" rel="noopener">${esc(r.commit.slice(0, 7))}</a>, файлов: ${r.files}.` : 'Изменений нет — всё уже опубликовано.',
+    ...(r.releases || []).map((t) => `Релиз <a href="${esc(r.url)}/releases/tag/${esc(t)}" target="_blank" rel="noopener">${esc(t)}</a>.`),
+  ];
+  return `<ul class="issues"><li class="ok">Опубликовано. ${parts.join(' ')}</li></ul>`;
+}
+
+// ---------- токены и подключение MCP ----------
+async function renderTokens() {
+  crumbs.innerHTML = `<a href="#/">Игры</a> / Токены и MCP`;
+  document.title = 'Токены и MCP · LocalizationForum';
+  if (!me) {
+    view.innerHTML = `<div class="empty"><button class="btn primary" data-act="login">Войдите через GitHub</button></div>`;
+    return;
+  }
+  const { tokens } = await api('/tokens');
+  const mcpUrl = (window.FORUM_API || location.origin) .replace(/\/$/, '') + '/api/mcp';
+  view.innerHTML = `
+    <div class="page-head"><h1>Токены и MCP</h1></div>
+    <div class="settings">
+      <section class="panel form">
+        <h2>Подключить к Claude</h2>
+        <p>MCP-сервер форума даёт ИИ-ассистенту инструменты: искать строки, предлагать переводы, голосовать и, если вы модератор, утверждать. Всё делается от вашего имени, а варианты получают значок <span class="ai">ИИ</span>.</p>
+        <div class="copy-row"><code>${esc(mcpUrl)}</code><button class="btn small" type="button" data-copy="${esc(mcpUrl)}">Копировать</button></div>
+        <p class="muted"><b>Claude (сайт, приложение, Cowork):</b> Настройки → Коннекторы → Добавить свой коннектор → вставьте адрес. При подключении откроется вход через GitHub и запрос разрешения — токен не нужен.</p>
+        <p class="muted"><b>Claude Code:</b> <code>claude mcp add --transport http localization-forum ${esc(mcpUrl)}</code> — вход тоже через браузер. Или с токеном: добавьте <code>--header "Authorization: Bearer &lt;токен&gt;"</code>.</p>
+        <p class="muted"><b>Cursor и другие:</b> URL сервера и заголовок <code>Authorization: Bearer &lt;токен&gt;</code>.</p>
+      </section>
+      <form class="panel form" data-form="new-token">
+        <h2>Персональный токен</h2>
+        <p class="muted">Для клиентов, где нельзя войти через браузер. Токен даёт те же права, что и ваш аккаунт — не публикуйте его.</p>
+        <div class="row2"><label>Название<input name="name" placeholder="например, Cursor на ноутбуке" maxlength="100"></label><div class="actions" style="align-self:end"><button class="btn primary">Создать токен</button></div></div>
+        <div class="new-token"></div>
+        <ul class="issues"></ul>
+      </form>
+      <section class="panel">
+        <h2>Выданные доступы</h2>
+        ${tokens.length ? `<ul class="mods">${tokens
+          .map(
+            (t) => `<li><span><b>${esc(t.name)}</b><span class="muted">${t.kind === 'oauth' ? 'подключение OAuth' : 'персональный'} · создан ${new Date(t.created_at).toLocaleDateString('ru')}${t.last_used_at ? ' · использован ' + new Date(t.last_used_at).toLocaleString('ru') : ' · не использовался'}</span></span>
+            <button class="link" data-act="token-revoke" data-id="${t.id}">отозвать</button></li>`,
+          )
+          .join('')}</ul>` : '<p class="muted">Пока нет.</p>'}
+      </section>
+    </div>`;
+  const form = view.querySelector('[data-form=new-token]');
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+      const r = await api('/tokens', { method: 'POST', body: { name: form.name.value } });
+      form.querySelector('.new-token').innerHTML = `<div class="token-box"><code>${esc(r.token)}</code><button class="btn small" type="button" data-copy="${esc(r.token)}">Копировать</button></div><p class="muted">Скопируйте сейчас — повторно токен не показывается.</p>`;
+      form.name.value = '';
+    } catch (err) {
+      form.querySelector('.issues').innerHTML = `<li class="error">${esc(err.message)}</li>`;
+    }
+  });
+}
+
+document.addEventListener('click', async (e) => {
+  const copy = e.target.closest('[data-copy]');
+  if (copy) {
+    try {
+      await navigator.clipboard.writeText(copy.dataset.copy);
+      toast('Скопировано');
+    } catch {
+      toast('Не удалось скопировать — выделите текст вручную');
+    }
+    return;
+  }
+  const rev = e.target.closest('[data-act=token-revoke]');
+  if (rev) {
+    try {
+      await api(`/tokens/${rev.dataset.id}`, { method: 'DELETE' });
+      toast('Доступ отозван');
+      renderTokens();
+    } catch (err) {
+      toast(err.message);
+    }
+  }
+});
