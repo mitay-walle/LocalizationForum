@@ -142,6 +142,11 @@ input:focus, select:focus, textarea:focus { background: var(--panel); box-shadow
 .side a small { flex: none; color: var(--muted); font-variant-numeric: tabular-nums; }
 .side a small.done { color: var(--accent); }
 .side a.on, .side a:hover { background: var(--accent-soft); text-decoration: none; }
+.side a { position: relative; }
+.side .fbar { position: absolute; left: 0; bottom: 0; height: 2px; background: var(--accent); opacity: 0.55; }
+.side-sort { display: flex; gap: 2px; margin: -2px 0 6px; background: var(--field); }
+.side-sort button { flex: 1; border: 0; background: none; padding: 0.35em 0; cursor: pointer; font-size: 0.8rem; color: var(--muted); }
+.side-sort button.on { background: var(--panel); color: var(--ink); box-shadow: var(--shadow-soft); font-weight: 600; }
 
 .stats { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px; margin: 0 0 16px; color: var(--muted); font-size: 0.93rem; }
 .stats b { color: var(--ink); font-variant-numeric: tabular-nums; }

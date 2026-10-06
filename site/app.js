@@ -231,8 +231,9 @@ async function renderGame(slug, lang, q) {
     api(`/games/${encodeURIComponent(slug)}/files?lang=${encodeURIComponent(lang)}`),
     api(`/games/${encodeURIComponent(slug)}/strings?${qs}`),
   ]);
-  state = { slug, lang, game, data, params };
+  state = { slug, lang, game, data, params, files: files.files };
   const st = stats.find((s) => s.lang === lang) || { approved: 0, stale: 0, voting: 0, total: 0 };
+  state.st = st;
 
   document.title = `${game.title} — ${langName(lang)} · LocalizationForum`;
   crumbs.innerHTML = `<a href="#/">Игры</a> / ${esc(game.title)} / ${esc(langName(lang))}`;
@@ -240,16 +241,7 @@ async function renderGame(slug, lang, q) {
   const pages = Math.max(1, Math.ceil(data.total / data.pageSize));
   view.innerHTML = `
     <div class="layout">
-      <aside class="side">
-        <a href="${href(slug, lang, { ...params, file: '', page: 1 })}" class="${params.file ? '' : 'on'}"><span class="fname">Все файлы</span><small>${st.approved}/${st.total}</small></a>
-        ${files.files
-          .map((f) => {
-            const i = f.file.lastIndexOf('/');
-            const dir = i >= 0 ? f.file.slice(0, i + 1) : '';
-            return `<a href="${href(slug, lang, { ...params, file: f.file, page: 1 })}" class="${f.file === params.file ? 'on' : ''}" title="${esc(f.file)}"><span class="fname">${dir ? `<span class="dir">${esc(dir)}</span>` : ''}${esc(f.file.slice(i + 1))}</span><small class="${f.approved === f.total ? 'done' : ''}">${f.approved}/${f.total}</small></a>`;
-          })
-          .join('')}
-      </aside>
+      <aside class="side">${renderSide(files.files, st)}</aside>
       <section>
         <div class="stats">
           <span>Переведено <b>${pct(st.approved, st.total)}%</b></span>
@@ -1158,4 +1150,52 @@ document.addEventListener('click', async (e) => {
       toast(err.message);
     }
   }
+});
+
+
+// ---------- список файлов: сортировка как в таблице ----------
+const FILE_SORTS = [
+  ['name', 'Имя'],
+  ['done', 'Готово'],
+  ['total', 'Строк'],
+];
+
+function sortFiles(list) {
+  const { key = 'name', dir = 'asc' } = uiPrefs.fileSort || {};
+  const val = (f) => (key === 'done' ? (f.total ? f.approved / f.total : 0) : key === 'total' ? f.total : f.file.toLowerCase());
+  const k = dir === 'asc' ? 1 : -1;
+  return [...list].sort((a, b) => {
+    const x = val(a), y = val(b);
+    if (x < y) return -k;
+    if (x > y) return k;
+    return a.file.localeCompare(b.file, undefined, { numeric: true });
+  });
+}
+
+function renderSide(files, st) {
+  const { slug, lang, params } = state ?? {};
+  const sort = uiPrefs.fileSort || { key: 'name', dir: 'asc' };
+  const head = `<div class="side-sort">${FILE_SORTS.map(
+    ([k, title]) => `<button type="button" data-act="file-sort" data-k="${k}" class="${sort.key === k ? 'on' : ''}" title="Сортировать: ${title.toLowerCase()}">${title}${sort.key === k ? (sort.dir === 'asc' ? ' ↑' : ' ↓') : ''}</button>`,
+  ).join('')}</div>`;
+  const all = `<a href="${href(slug, lang, { ...params, file: '', page: 1 })}" class="${params.file ? '' : 'on'}"><span class="fname">Все файлы</span><small>${st.approved}/${st.total}</small></a>`;
+  const rows = sortFiles(files)
+    .map((f) => {
+      const i = f.file.lastIndexOf('/');
+      const dir = i >= 0 ? f.file.slice(0, i + 1) : '';
+      const p = f.total ? Math.round((f.approved / f.total) * 100) : 0;
+      return `<a href="${href(slug, lang, { ...params, file: f.file, page: 1 })}" class="${f.file === params.file ? 'on' : ''}" title="${esc(f.file)} — ${p}%"><span class="fname">${dir ? `<span class="dir">${esc(dir)}</span>` : ''}${esc(f.file.slice(i + 1))}</span><small class="${f.approved === f.total ? 'done' : ''}">${f.approved}/${f.total}</small><i class="fbar" style="width:${p}%"></i></a>`;
+    })
+    .join('');
+  return head + all + rows;
+}
+
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-act=file-sort]');
+  if (!b || !state?.files) return;
+  const cur = uiPrefs.fileSort || { key: 'name', dir: 'asc' };
+  // Повторный клик по той же колонке — обратный порядок; новая колонка: имя по возрастанию, числа — по убыванию
+  uiPrefs.fileSort = cur.key === b.dataset.k ? { key: cur.key, dir: cur.dir === 'asc' ? 'desc' : 'asc' } : { key: b.dataset.k, dir: b.dataset.k === 'name' ? 'asc' : 'desc' };
+  applyUi();
+  document.querySelector('.side').innerHTML = renderSide(state.files, state.st);
 });
