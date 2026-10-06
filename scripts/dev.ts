@@ -2,7 +2,7 @@
 import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { Hono } from 'hono';
-import { app } from '../src/app.js';
+import { root as api } from '../src/server.js';
 
 try {
   process.loadEnvFile('.env');
@@ -11,7 +11,7 @@ try {
 }
 
 const root = new Hono();
-root.route('/', app);
+root.route('/', api);
 root.use('/*', serveStatic({ root: './site' }));
 
 const port = Number(process.env.PORT ?? 3000);
