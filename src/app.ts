@@ -160,7 +160,8 @@ app.get('/games/:slug', async (c) => {
     left join approved a on a.string_id = s.id and a.lang = l.lang
     where s.game_id = ${g.id} and not s.removed
     group by l.lang`;
-  return c.json({ game: g, stats });
+  const user = await currentUser(c);
+  return c.json({ game: g, stats, canManage: await isModerator(user, g.id, '*') });
 });
 
 app.get('/games/:slug/files', async (c) => {
@@ -448,4 +449,151 @@ app.post('/admin/import/finish', async (c) => {
   const g = await gameBySlug(b.slug);
   if (!Array.isArray(b.paths) || !b.paths.length) fail(400, 'paths: список всех файлов source/');
   return c.json(await finalizeSource(g, b.paths));
+});
+
+// ---------- управление играми с сайта (вошедшие пользователи) ----------
+
+const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
+const LANG_RE = /^[a-z]{2,3}(-[A-Za-z0-9]{2,8})?$/;
+
+/** Управлять игрой (настройки, исходники, модераторы) может админ или модератор игры на все языки ('*'). */
+async function canManage(user: User | null, gameId: number) {
+  return isModerator(user, gameId, '*');
+}
+
+async function requireManager(c: Context): Promise<{ user: User; game: Game }> {
+  const user = await requireUser(c);
+  const game = await gameBySlug(c.req.param('slug')!);
+  if (!(await canManage(user, game.id))) fail(403, 'Управлять игрой могут её владелец, модераторы всех языков и администраторы');
+  return { user, game };
+}
+
+function cleanLanguages(list: unknown, sourceLang: string): string[] {
+  if (!Array.isArray(list)) fail(400, 'Укажите хотя бы один язык перевода');
+  const langs = [...new Set((list as unknown[]).map((l) => String(l).trim()).filter(Boolean))];
+  const bad = langs.filter((l) => !LANG_RE.test(l));
+  if (bad.length) fail(400, `Неверный код языка: ${bad.join(', ')} (нужен вид ru, uk, pt-BR)`);
+  if (langs.includes(sourceLang)) fail(400, 'Язык оригинала не может быть языком перевода');
+  if (!langs.length) fail(400, 'Укажите хотя бы один язык перевода');
+  return langs;
+}
+
+app.get('/formats', (c) => c.json({ formats: formatIds }));
+
+/** Создать игру. Создатель становится её владельцем (модератор '*'). */
+app.post('/games', async (c) => {
+  const user = await requireUser(c);
+  const b = await body<{ slug: string; title: string; format: string; sourceLang?: string; languages: string[]; repo?: string }>(c);
+  const slug = String(b.slug ?? '').trim();
+  const title = String(b.title ?? '').trim();
+  const sourceLang = String(b.sourceLang ?? 'en').trim() || 'en';
+  if (!SLUG_RE.test(slug)) fail(400, 'Адрес: латиница в нижнем регистре, цифры и дефис');
+  if (!title || title.length > 200) fail(400, 'Укажите название игры');
+  if (!formatIds.includes(b.format)) fail(400, `Формат: одно из ${formatIds.join(', ')}`);
+  if (!LANG_RE.test(sourceLang)) fail(400, 'Неверный код языка оригинала');
+  const languages = cleanLanguages(b.languages, sourceLang);
+  const repo = b.repo?.trim() || null;
+  if (repo && !/^[\w.-]+\/[\w.-]+$/.test(repo)) fail(400, 'Репозиторий: owner/name');
+  const sql = db();
+  const created = await sql.begin(async (tx) => {
+    const [g] = await tx<{ id: number }[]>`
+      insert into games (slug, title, format, source_lang, languages, repo, created_by)
+      values (${slug}, ${title}, ${b.format}, ${sourceLang}, ${languages}, ${repo}, ${user.id})
+      on conflict (slug) do nothing returning id`;
+    if (!g) return null;
+    await tx`insert into moderators (game_id, lang, user_id) values (${g.id}, '*', ${user.id})`;
+    return g;
+  });
+  if (!created) fail(422, 'Игра с таким адресом уже есть');
+  return c.json({ slug }, 201);
+});
+
+/** Настройки игры для страницы управления. */
+app.get('/games/:slug/manage', async (c) => {
+  const { game } = await requireManager(c);
+  const moderators = await db()`
+    select u.login, u.avatar_url, m.lang from moderators m join users u on u.id = m.user_id
+    where m.game_id = ${game.id} order by m.lang, u.login`;
+  const [files] = await db()<{ files: number; strings: number }[]>`
+    select count(distinct file)::int as files, count(*)::int as strings from strings where game_id = ${game.id} and not removed`;
+  return c.json({ game, moderators, ...files, formats: formatIds });
+});
+
+/** Изменить название, языки, репозиторий, правила проверок. */
+app.post('/games/:slug/settings', async (c) => {
+  const { game } = await requireManager(c);
+  const b = await body<{ title?: string; languages?: string[]; repo?: string | null; rules?: Record<string, Rule[]> }>(c);
+  const title = b.title !== undefined ? String(b.title).trim() : game.title;
+  if (!title || title.length > 200) fail(400, 'Укажите название игры');
+  const languages = b.languages !== undefined ? cleanLanguages(b.languages, game.source_lang) : game.languages;
+  const repo = b.repo === undefined ? game.repo : b.repo?.trim() || null;
+  if (repo && !/^[\w.-]+\/[\w.-]+$/.test(repo)) fail(400, 'Репозиторий: owner/name');
+  let rules = game.rules;
+  if (b.rules !== undefined) {
+    if (typeof b.rules !== 'object' || Array.isArray(b.rules)) fail(400, 'rules: объект { "ru": [ … ] }');
+    for (const [lang, list] of Object.entries(b.rules)) {
+      if (!Array.isArray(list)) fail(400, `rules.${lang}: массив правил`);
+      for (const r of list) {
+        if (typeof r?.pattern !== 'string' || typeof r?.message !== 'string') fail(400, `rules.${lang}: у правила нужны pattern и message`);
+        try {
+          new RegExp(r.pattern, r.flags ?? 'u');
+        } catch {
+          fail(400, `rules.${lang}: неверное регулярное выражение ${r.pattern}`);
+        }
+      }
+    }
+    rules = b.rules;
+  }
+  await db()`
+    update games set title = ${title}, languages = ${languages}, repo = ${repo},
+      rules = ${db().json(rules as never)}, updated_at = now()
+    where id = ${game.id}`;
+  return c.json({ ok: true });
+});
+
+/**
+ * Загрузка исходников с сайта, пачками (тело ≤ ~4 МБ).
+ * replace=true в последней пачке вместе с paths — строки из файлов, которых нет в paths, скрываются.
+ */
+app.post('/games/:slug/source', async (c) => {
+  const { game } = await requireManager(c);
+  const b = await body<{ files: InFile[]; paths?: string[] }>(c);
+  if (!Array.isArray(b.files)) fail(400, 'files: массив {path, content}');
+  const res = await importSource(game, b.files);
+  const removed = Array.isArray(b.paths) && b.paths.length ? (await finalizeSource(game, b.paths)).removed : 0;
+  return c.json({ ...res, removed: res.removed + removed });
+});
+
+/** Загрузка готового перевода с сайта: заполняет утверждённые строки. */
+app.post('/games/:slug/translation', async (c) => {
+  const { game } = await requireManager(c);
+  const b = await body<{ lang: string; files: InFile[]; overwrite?: boolean }>(c);
+  checkLang(game, b.lang);
+  if (!Array.isArray(b.files)) fail(400, 'files: массив {path, content}');
+  return c.json(await importTranslation(game, b.lang, b.files, !!b.overwrite));
+});
+
+/** Назначить или снять модератора. lang = '*' — все языки (может управлять игрой). */
+app.post('/games/:slug/moderators', async (c) => {
+  const { user, game } = await requireManager(c);
+  const { lang, login, remove } = await body<{ lang: string; login: string; remove?: boolean }>(c);
+  if (lang !== '*') checkLang(game, lang);
+  const [u] = await db()<{ id: number }[]>`select id from users where lower(login) = lower(${String(login ?? '').trim()})`;
+  if (!u) fail(404, 'Этот пользователь ещё ни разу не входил на сайт');
+  if (remove) {
+    if (u!.id === user.id && lang === '*' && !user.is_admin) fail(422, 'Нельзя снять права управления с самого себя');
+    await db()`delete from moderators where game_id = ${game.id} and lang = ${lang} and user_id = ${u!.id}`;
+  } else {
+    await db()`insert into moderators (game_id, lang, user_id) values (${game.id}, ${lang}, ${u!.id}) on conflict do nothing`;
+  }
+  return c.json({ ok: true });
+});
+
+/** Удалить игру целиком (только администратор). */
+app.delete('/games/:slug', async (c) => {
+  const user = await requireUser(c);
+  if (!user.is_admin) fail(403, 'Удалять игры может только администратор');
+  const g = await gameBySlug(c.req.param('slug'));
+  await db()`delete from games where id = ${g.id}`;
+  return c.json({ ok: true });
 });
