@@ -3,6 +3,8 @@ import { cors } from 'hono/cors';
 import { HTTPException } from 'hono/http-exception';
 import { allowedReturn, currentUser, isModerator, signSession, signState, upsertUser, verifyState, type User } from './auth.js';
 import { db } from './db.js';
+import { publishGame } from './publish.js';
+import { SignJWT, jwtVerify } from 'jose';
 import { env, list } from './env.js';
 import { isBuiltin, listFormats, resolveFormat, validateLinesConfig, makeLinesFormat } from './formats/index.js';
 import { exportLanguage, finalizeSource, importSource, importTranslation, type Game, type InFile } from './sync.js';
@@ -16,7 +18,8 @@ app.use(
   '*',
   cors({
     origin: (origin, c) => (list('SITE_ORIGINS').includes(origin) || origin === new URL(c.req.url).origin ? origin : null),
-    allowHeaders: ['Authorization', 'Content-Type', 'X-Sync-Token'],
+    allowHeaders: ['Authorization', 'Content-Type', 'X-Sync-Token', 'Mcp-Session-Id', 'Mcp-Protocol-Version'],
+    exposeHeaders: ['WWW-Authenticate', 'Mcp-Session-Id'],
     allowMethods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
     maxAge: 86400,
   }),
@@ -221,11 +224,11 @@ app.get('/games/:slug/strings', async (c) => {
     order by s.file, s.position
     limit ${PAGE} offset ${(page - 1) * PAGE}`;
 
-  type Variant = { id: number; string_id: number; text: string; author: string | null; votes: number; mine: boolean; created_at: string };
+  type Variant = { id: number; string_id: number; text: string; author: string | null; votes: number; mine: boolean; ai: boolean; created_at: string };
   const ids = rows.map((r) => r.id);
   const variants: Variant[] = ids.length
     ? await sql<Variant[]>`
-        select v.id, v.string_id, v.text, u.login as author, v.created_at,
+        select v.id, v.string_id, v.text, u.login as author, v.created_at, v.ai,
           (select count(*)::int from votes x where x.variant_id = v.id) as votes,
           exists (select 1 from votes x where x.variant_id = v.id and x.user_id = ${user?.id ?? 0}) as mine
         from variants v left join users u on u.id = v.author_id
@@ -283,8 +286,8 @@ app.post('/strings/:id/variants', async (c) => {
   if (check) return c.json({ issues }); // только проверить, не сохранять
   if (issues.some((i) => i.level === 'error')) return c.json({ error: 'Вариант не прошёл проверку', issues }, 422);
   const [v] = await db()`
-    insert into variants (string_id, lang, text, author_id)
-    values (${s.string_id}, ${lang}, ${value}, ${user.id})
+    insert into variants (string_id, lang, text, author_id, ai)
+    values (${s.string_id}, ${lang}, ${value}, ${user.id}, ${c.req.header('x-client') === 'mcp'})
     on conflict (string_id, lang, text) do nothing
     returning id`;
   if (!v) fail(422, 'Такой вариант уже предложен');
@@ -692,4 +695,69 @@ app.post('/formats/:slug', async (c) => {
     where slug = ${slug}`;
   const games = await db()<{ slug: string }[]>`select slug from games where format = ${slug}`;
   return c.json({ ok: true, games: games.map((g) => g.slug) });
+});
+
+
+// ---------- «Опубликовать в GitHub» ----------
+
+const VERSION_RE = /^[0-9A-Za-z][0-9A-Za-z._-]{0,39}$/;
+const jwtKey = () => new TextEncoder().encode(env('JWT_SECRET'));
+
+/** Начать публикацию: вернуть ссылку на GitHub, где пользователь разрешит запись в публичные репо (один раз, токен не хранится). */
+app.post('/games/:slug/publish/start', async (c) => {
+  const { user, game } = await requireManager(c);
+  const b = await body<{ version?: string; return?: string }>(c);
+  const version = String(b.version ?? '').trim();
+  if (version && !VERSION_RE.test(version)) fail(400, 'Версия: латиница, цифры, точки и дефисы, например 1.0 или 1.6.2');
+  if (!game.repo) fail(400, 'Сначала укажите репозиторий (owner/name) и сохраните настройки');
+  const ret = b.return ?? '';
+  if (!allowedReturn(ret, c.req.url)) fail(400, 'Недопустимый адрес возврата');
+  const state = await new SignJWT({ typ: 'publish', gid: game.id, uid: user.id, ver: version, ret })
+    .setProtectedHeader({ alg: 'HS256' })
+    .setExpirationTime('15m')
+    .sign(jwtKey());
+  const url = new URL('https://github.com/login/oauth/authorize');
+  url.searchParams.set('client_id', env('GITHUB_CLIENT_ID'));
+  url.searchParams.set('redirect_uri', new URL('/api/auth/callback/publish', c.req.url).toString());
+  url.searchParams.set('scope', 'public_repo');
+  url.searchParams.set('state', state);
+  return c.json({ url: url.toString() });
+});
+
+/** GitHub вернул пользователя с кодом: получаем одноразовый токен, публикуем, возвращаем на сайт с итогом. */
+app.get('/auth/callback/publish', async (c) => {
+  let st: { gid: number; uid: number; ver: string; ret: string };
+  try {
+    const { payload } = await jwtVerify(c.req.query('state') ?? '', jwtKey());
+    if (payload.typ !== 'publish') throw new Error();
+    st = payload as unknown as typeof st;
+  } catch {
+    return c.text('Ссылка публикации устарела — нажмите «Опубликовать» ещё раз', 400);
+  }
+  const [g] = await db()<Game[]>`select id, slug, title, repo, format, source_lang, languages, rules from games where id = ${st.gid}`;
+  const back = (result: unknown) => c.redirect(`${st.ret}#/g/${encodeURIComponent(g?.slug ?? '')}/settings?pub=${encodeURIComponent(JSON.stringify(result))}`);
+  if (!g) return back({ error: 'Игра не найдена' });
+  const [u] = await db()<User[]>`select id, login, avatar_url, is_admin from users where id = ${st.uid}`;
+  if (!(await isModerator(u ?? null, g.id, '*'))) return back({ error: 'Нет прав на управление игрой' });
+  if (c.req.query('error')) return back({ error: 'Доступ к GitHub не выдан' });
+
+  const tokenRes = await fetch('https://github.com/login/oauth/access_token', {
+    method: 'POST',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      client_id: env('GITHUB_CLIENT_ID'),
+      client_secret: env('GITHUB_CLIENT_SECRET'),
+      code: c.req.query('code'),
+      redirect_uri: new URL('/api/auth/callback/publish', c.req.url).toString(),
+    }),
+  });
+  const tok = (await tokenRes.json().catch(() => ({}))) as { access_token?: string; error_description?: string };
+  if (!tok.access_token) return back({ error: `GitHub: ${tok.error_description ?? 'не удалось получить доступ'}` });
+  try {
+    const site = new URL(st.ret);
+    const result = await publishGame(g, tok.access_token, { version: st.ver || undefined, site: site.origin + site.pathname });
+    return back(result);
+  } catch (e) {
+    return back({ error: (e as Error).message });
+  }
 });

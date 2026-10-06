@@ -49,8 +49,8 @@ export async function importSource(game: Game, files: InFile[]) {
 
   const sql = db();
   return sql.begin(async (tx) => {
-    // Для построчных форматов храним оригинал целиком: перевод собирается поверх него.
-    if (format.skeleton) {
+    // Храним оригиналы целиком: построчные форматы собирают перевод поверх них, а «Опубликовать в GitHub» кладёт их в source/.
+    {
       const originals = files
         .map((f) => ({ game_id: game.id, path: norm(f.path), content: f.content }))
         .filter((f) => format.matches(f.path));

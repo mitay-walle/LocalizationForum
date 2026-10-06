@@ -1,3 +1,4 @@
+import { createHash, randomBytes } from 'node:crypto';
 import { SignJWT, jwtVerify } from 'jose';
 import type { Context } from 'hono';
 import { db } from './db.js';
@@ -34,10 +35,37 @@ export async function verifyState(state: string): Promise<string> {
   return payload.ret;
 }
 
-/** Текущий пользователь по заголовку Authorization: Bearer <session>. */
+export const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
+
+/** Выпустить токен API/MCP. Возвращает сам токен — показать один раз, в БД только хеш. */
+export async function createApiToken(userId: number, name: string, kind: 'personal' | 'oauth', clientId: string | null = null, days?: number) {
+  const token = 'lf_' + randomBytes(24).toString('base64url');
+  const [row] = await db()<{ id: number }[]>`
+    insert into api_tokens (user_id, name, kind, client_id, token_hash, expires_at)
+    values (${userId}, ${name.slice(0, 100)}, ${kind}, ${clientId}, ${sha256(token)},
+            ${days ? new Date(Date.now() + days * 864e5) : null})
+    returning id`;
+  return { id: row.id, token };
+}
+
+/** Пользователь по токену API (lf_…). Обновляет last_used_at не чаще раза в минуту. */
+export async function userByApiToken(token: string): Promise<User | null> {
+  const [u] = await db()<(User & { token_id: number })[]>`
+    select u.id, u.login, u.avatar_url, u.is_admin, t.id as token_id
+    from api_tokens t join users u on u.id = t.user_id
+    where t.token_hash = ${sha256(token)} and (t.expires_at is null or t.expires_at > now())`;
+  if (!u) return null;
+  await db()`update api_tokens set last_used_at = now()
+    where id = ${u.token_id} and (last_used_at is null or last_used_at < now() - interval '1 minute')`;
+  const { token_id: _t, ...user } = u;
+  return user;
+}
+
+/** Текущий пользователь: Authorization: Bearer <сессия сайта | токен lf_…>. */
 export async function currentUser(c: Context): Promise<User | null> {
   const h = c.req.header('authorization');
   if (!h?.startsWith('Bearer ')) return null;
+  if (h.slice(7).startsWith('lf_')) return userByApiToken(h.slice(7));
   try {
     const { payload } = await jwtVerify(h.slice(7), key());
     if (payload.typ !== 'session' || !payload.sub) return null;
