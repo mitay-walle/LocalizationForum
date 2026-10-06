@@ -585,6 +585,16 @@ app.post('/games/:slug/source', async (c) => {
   return c.json({ ...res, removed: res.removed + removed });
 });
 
+/** Пересобрать строки из сохранённых оригиналов по текущему описанию формата (после правки формата). */
+app.post('/games/:slug/reparse', async (c) => {
+  const { game } = await requireManager(c);
+  const files = await db()<InFile[]>`select path, content from source_files where game_id = ${game.id}`;
+  if (!files.length) fail(422, 'Оригиналы не сохранены — загрузите исходные файлы заново');
+  const res = await importSource(game, files);
+  const removed = (await finalizeSource(game, files.map((f) => f.path))).removed;
+  return c.json({ ...res, removed: res.removed + removed });
+});
+
 /** Загрузка готового перевода с сайта: заполняет утверждённые строки. */
 app.post('/games/:slug/translation', async (c) => {
   const { game } = await requireManager(c);
