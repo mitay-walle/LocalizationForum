@@ -376,3 +376,5 @@ input:focus, select:focus, textarea:focus { background: var(--panel); box-shadow
 }
 .stage-banner > * { min-width: 0; }
 .stage-banner .seg { flex-wrap: wrap; max-width: 100%; }
+
+.approved .unapprove { margin-top: 8px; display: block; }

@@ -381,7 +381,7 @@ function renderString(s) {
   // Утверждённый вариант уже показан блоком «утверждено» — в списке его не дублируем
   const chosenVariant = s.stale ? null : s.variants.find((v) => v.id === s.approved_variant);
   const approved = s.approved_text != null
-    ? `<div class="approved ${s.stale ? 'stale' : ''}">${s.stale ? `<span class="badge">${t('str.sourceChanged')}</span>` : ''}<div class="atext">${esc(s.approved_text)}</div><span class="meta">${t('str.approved')}${s.approved_by ? ` · ${esc(s.approved_by)}` : ''}${chosenVariant ? ` · ${t('str.author', { name: esc(chosenVariant.author || t('str.anon')) })}${chosenVariant.ai ? aiBadge() : ''}${chosenVariant.votes ? ` · ▲ ${chosenVariant.votes}` : ''}` : ''}${mod ? ` · <button class="link" data-act="unapprove" data-id="${s.id}">${t('str.unapprove')}</button>` : ''}</span></div>`
+    ? `<div class="approved ${s.stale ? 'stale' : ''}">${s.stale ? `<span class="badge">${t('str.sourceChanged')}</span>` : ''}<div class="atext">${esc(s.approved_text)}</div><span class="meta">${t('str.approved')}${s.approved_by ? ` · ${esc(s.approved_by)}` : ''}${chosenVariant ? ` · ${t('str.author', { name: esc(chosenVariant.author || t('str.anon')) })}${chosenVariant.ai ? aiBadge() : ''}${chosenVariant.votes ? ` · ▲ ${chosenVariant.votes}` : ''}` : ''}</span>${mod ? `<button class="btn small unapprove" data-act="unapprove" data-id="${s.id}">${t('str.unapprove')}</button>` : ''}</div>`
     : '';
   const variants = s.variants
     .filter((v) => v !== chosenVariant)
