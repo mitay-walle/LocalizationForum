@@ -1,0 +1,38 @@
+# Отправляет исходные строки (source/) на форум при каждом изменении.
+# Вручную (Run workflow) можно ещё и загрузить готовый перевод из папки языка.
+name: Import source
+
+on:
+  push:
+    branches: [main, master]
+    paths: ['source/**', 'rules/**', 'game.json']
+  workflow_dispatch:
+    inputs:
+      translation:
+        description: 'Загрузить готовый перевод из папки языка (например ru). Пусто — только исходники.'
+        required: false
+        default: ''
+      overwrite:
+        description: 'Перезаписать уже утверждённые строки'
+        type: boolean
+        default: false
+
+concurrency: forum-import
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    env:
+      FORUM_API_URL: ${{ vars.FORUM_API_URL }}
+      FORUM_SYNC_TOKEN: ${{ secrets.FORUM_SYNC_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node scripts/forum.mjs import
+      - if: inputs.translation != ''
+        env:
+          LANG_DIR: ${{ inputs.translation }}
+          OVERWRITE: ${{ inputs.overwrite && '--overwrite' || '' }}
+        run: node scripts/forum.mjs import-translation "$LANG_DIR" $OVERWRITE

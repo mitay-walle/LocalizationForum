@@ -1,0 +1,49 @@
+# Релиз перевода: Actions → Release translation → Run workflow (язык + версия).
+# Тег: <язык>-<версия>, например ru-1.6.0. Во вложении — zip папки языка, в заметках — титры.
+name: Release translation
+
+on:
+  workflow_dispatch:
+    inputs:
+      lang:
+        description: 'Язык (папка), например ru'
+        required: true
+      version:
+        description: 'Версия: <версия игры>.<патч перевода>, например 1.6.0'
+        required: true
+
+permissions:
+  contents: write
+
+concurrency: forum-sync
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      FORUM_API_URL: ${{ vars.FORUM_API_URL }}
+      LANG_DIR: ${{ inputs.lang }}
+      VERSION: ${{ inputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Свежий перевод с форума
+        run: |
+          node scripts/forum.mjs export
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || { git commit -m "Перевод: синхронизация перед релизом $LANG_DIR-$VERSION"; git push; }
+      - name: Архив и релиз
+        run: |
+          case "$LANG_DIR" in *[!a-zA-Z_-]*|'') echo "Некорректный язык"; exit 1;; esac
+          case "$VERSION" in *[!0-9A-Za-z._-]*|'') echo "Некорректная версия"; exit 1;; esac
+          [ -d "$LANG_DIR" ] || { echo "Нет папки $LANG_DIR — перевода ещё нет"; exit 1; }
+          SLUG=$(node -p "require('./game.json').slug")
+          ZIP="$SLUG-$LANG_DIR-$VERSION.zip"
+          (cd "$LANG_DIR" && zip -qr "../$ZIP" .)
+          node scripts/forum.mjs credits "$LANG_DIR" > notes.md
+          gh release create "$LANG_DIR-$VERSION" "$ZIP" --title "$LANG_DIR $VERSION" --notes-file notes.md --target "$(git rev-parse HEAD)"

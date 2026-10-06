@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LanguageData>
+
+  <!-- EN:
+    <li>r_name->[adj] [noun]</li>
+    <li>adj->Brave</li>
+    <li>noun->Wolf</li>
+  -->
+  <NamerColony.rulePack.rulesStrings>
+    <li>r_name->[adj] [noun]</li>
+    <li>adj->Brave</li>
+    <li>noun->Wolf</li>
+  </NamerColony.rulePack.rulesStrings>
+
+</LanguageData>

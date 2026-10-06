@@ -1,0 +1,8 @@
+{
+  "menu": {
+    "start_game": "Start new game",
+    "settings": "Settings",
+    "exit": "Exit"
+  },
+  "hud": { "ammo": "Ammo: %d/%d", "reactor": "The reactor is critically unstable." }
+}

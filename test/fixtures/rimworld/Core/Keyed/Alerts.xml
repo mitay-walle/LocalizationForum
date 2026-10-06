@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LanguageData>
+
+  <!-- EN: Minor break risk -->
+  <BreakRiskMinor>Minor break risk</BreakRiskMinor>
+  <!-- EN: These colonists are in a poor mood and may have a minor mental break at any time:\n{0} -->
+  <BreakRiskMinorDesc>These colonists are in a poor mood and may have a minor mental break at any time:\n{0}</BreakRiskMinorDesc>
+  <!-- EN: {PAWN_nameDef} is starving & needs food -->
+  <Starving>{PAWN_nameDef} is starving &amp; needs food</Starving>
+  <!-- EN: {PAWN_pronoun} lost {PAWN_possessive} <color=#ff0000>weapon</color> -->
+  <LostWeapon>{PAWN_pronoun} lost {PAWN_possessive} &lt;color=#ff0000&gt;weapon&lt;/color&gt;</LostWeapon>
+
+</LanguageData>

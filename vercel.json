@@ -1,0 +1,7 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "regions": ["fra1"],
+  "buildCommand": "npm run vercel-build",
+  "outputDirectory": "site",
+  "rewrites": [{ "source": "/api/:path*", "destination": "/api" }]
+}

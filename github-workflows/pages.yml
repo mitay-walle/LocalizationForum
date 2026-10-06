@@ -1,0 +1,37 @@
+# Публикует site/ на GitHub Pages. Адрес API берётся из переменной репозитория FORUM_API_URL.
+# Один раз: Settings → Pages → Source: GitHub Actions.
+name: Pages
+
+on:
+  push:
+    branches: [main, master]
+    paths: ['site/**', '.github/workflows/pages.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: config.js
+        env:
+          FORUM_API_URL: ${{ vars.FORUM_API_URL }}
+        run: node -e "require('fs').writeFileSync('site/config.js', 'window.FORUM_API = ' + JSON.stringify(process.env.FORUM_API_URL || '') + ';\n')"
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@v4

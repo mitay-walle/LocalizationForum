@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LanguageData>
+
+  <!-- Thought_Memory, null. Label: {PAWN}. -->
+  <!-- EN: strange feeling -->
+  <ArtifactMoodBoost.stages.strange_feeling.label>TODO</ArtifactMoodBoost.stages.strange_feeling.label>
+  <!-- EN: I feel strange, but also very relaxed. -->
+  <ArtifactMoodBoost.stages.strange_feeling.description>TODO</ArtifactMoodBoost.stages.strange_feeling.description>
+
+</LanguageData>

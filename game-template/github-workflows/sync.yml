@@ -1,0 +1,37 @@
+# Забирает утверждённые переводы с форума и коммитит их в папки языков.
+# Запускается сразу после утверждения (если на форуме задан GITHUB_DISPATCH_TOKEN), раз в час и вручную.
+name: Sync translations
+
+on:
+  repository_dispatch:
+    types: [translations-updated]
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: forum-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    env:
+      FORUM_API_URL: ${{ vars.FORUM_API_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node scripts/forum.mjs export
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then echo "Без изменений"; exit 0; fi
+          git commit -m "Перевод: синхронизация с форумом"
+          git push
