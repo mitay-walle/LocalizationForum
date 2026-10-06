@@ -71,15 +71,21 @@ npm run typecheck
 | POST/DELETE | `/api/variants/:id/vote` — один голос на строку+язык: POST снимает голос пользователя с других вариантов строки и возвращает их id в `cleared` | вошедшие |
 | DELETE | `/api/variants/:id` | автор / модератор |
 | POST/DELETE | `/api/strings/:id/approve` `{lang, variantId \| text}` | модератор |
-| POST | `/api/games` `{slug, title, format, sourceLang, languages, repo?}` | вошедшие (создатель → модератор `*`) |
+| POST | `/api/games` `{slug, title, format, sourceLang, languages, repo?, description?, links?, cover_url?}` | вошедшие (создатель → модератор `*`) |
 | GET | `/api/games/:slug/manage` | модератор `*` / админ |
-| POST | `/api/games/:slug/settings` `{title?, languages?, repo?, rules?}` | модератор `*` / админ |
+| POST | `/api/games/:slug/settings` `{title?, languages?, force?, repo?, rules?, description?, links?, cover_url?}` | модератор `*` / админ |
 | POST | `/api/games/:slug/source` `{files, paths?}` | модератор `*` / админ |
 | POST | `/api/games/:slug/translation` `{lang, files, overwrite?}` | модератор `*` / админ |
 | POST | `/api/games/:slug/moderators` `{login, lang, remove?}` | модератор `*` / админ |
 | DELETE | `/api/games/:slug` | администратор |
 | POST | `/api/admin/moderators` | администратор |
 | POST | `/api/admin/import`, `/api/admin/import/finish` | Actions репо игры (`X-Sync-Token`) |
+
+## Страница игры и «Об игре»
+
+Миграция `007_game_info.sql`: `games.description` (до 5000 символов, показывается как обычный текст), `games.links` (jsonb, до 10 элементов `{kind: steam|site|gog|itch|other, url, title?}`), `games.cover_url`. Ссылки и обложка — только `http(s)://`, до 500 символов. Поля принимают `POST /api/games` и `POST /api/games/:slug/settings` (не передано — не меняется, пустое — очищается); отдают `GET /api/games/:slug` и `GET /api/games` (описание обрезано до 300 символов). Если обложки нет, а есть ссылка Steam, сайт сам подставляет `https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/<appid>/header.jpg` (не cloudflare-CDN: он недоступен в части стран); сервер ничего не скачивает.
+
+Языки: `settings {languages}` убирает язык, только если у него нет утверждённых переводов, иначе 422 — нужен `force: true` (переводы остаются в базе и вернутся при повторном добавлении). Маршрут сайта `#/g/:slug` — обзор игры, `#/g/:slug/:lang` — перевод.
 
 ## Антиспам: лимиты и баны
 
