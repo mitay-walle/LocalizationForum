@@ -551,6 +551,17 @@ async function renderSettings(slug) {
       }
     });
 
+  // Формат сохраняется сразу при выборе: от него зависит, какие файлы примет загрузка ниже.
+  forms.settings.format?.addEventListener('change', async (e) => {
+    try {
+      await api(`/games/${encodeURIComponent(slug)}/settings`, { method: 'POST', body: { format: e.target.value } });
+      toast('Формат сохранён');
+      renderSettings(slug);
+    } catch (err) {
+      report(forms.settings, [['error', err.message]]);
+    }
+  });
+
   onSubmit('settings', async (f) => {
     await api(`/games/${encodeURIComponent(slug)}/settings`, {
       method: 'POST',
