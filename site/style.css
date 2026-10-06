@@ -150,3 +150,39 @@ button, input, select, textarea { font: inherit; color: inherit; }
   .variant { grid-template-columns: 44px 1fr; }
   .vactions { grid-column: 2; }
 }
+
+/* --- управление играми --- */
+h1 { font-size: 24px; margin: 0; }
+h2 { font-size: 17px; margin: 0 0 10px; }
+.page-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; flex-wrap: wrap; }
+.spacer { flex: 1; }
+.stats { align-items: center; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px 20px; }
+.settings { display: grid; gap: 16px; max-width: 820px; }
+form.panel.form { max-width: 820px; }
+.form { display: grid; gap: 12px; }
+.form > h1 { margin-bottom: 6px; }
+.form label { display: grid; gap: 4px; font-weight: 500; }
+.form label small { font-weight: 400; color: var(--muted); }
+.form input:not([type=checkbox]):not([type=file]), .form select, .form textarea {
+  width: 100%; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); font-weight: 400;
+}
+.form textarea.mono { font-size: 13px; resize: vertical; }
+.form input:focus, .form select:focus, .form textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.form label.check { display: flex; align-items: center; gap: 8px; font-weight: 400; }
+.form p { margin: 0; }
+.row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.actions { display: flex; gap: 8px; align-items: center; }
+.picker { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.picker label.btn { display: inline-flex; font-weight: 400; }
+.mods { list-style: none; margin: 0; padding: 0; }
+.mods li { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.mods li > span { display: flex; align-items: center; gap: 8px; }
+.issues .ok { background: var(--accent-soft); color: var(--accent); }
+.btn.bad { background: var(--bad); border-color: var(--bad); color: #fff; }
+.panel.danger { border-color: var(--bad); }
+
+@media (max-width: 760px) {
+  .row2 { grid-template-columns: 1fr; }
+  .panel { padding: 14px 16px; }
+}

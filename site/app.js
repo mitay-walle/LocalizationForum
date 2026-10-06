@@ -94,7 +94,9 @@ function href(slug, lang, params = {}) {
 async function route() {
   const { parts, q } = parseRoute();
   try {
-    if (parts[0] === 'g' && parts[1]) await renderGame(parts[1], parts[2], q);
+    if (parts[0] === 'new') await renderNewGame();
+    else if (parts[0] === 'g' && parts[1] && parts[2] === 'settings') await renderSettings(parts[1]);
+    else if (parts[0] === 'g' && parts[1]) await renderGame(parts[1], parts[2], q);
     else await renderHome();
   } catch (e) {
     view.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
@@ -106,11 +108,12 @@ async function renderHome() {
   crumbs.innerHTML = '';
   document.title = 'LocalizationForum';
   const { games } = await api('/games');
+  const head = `<div class="page-head"><h1>Игры</h1>${me ? `<a class="btn primary" href="#/new">+ Новая игра</a>` : `<button class="btn" data-act="login">Войдите, чтобы добавить игру</button>`}</div>`;
   if (!games.length) {
-    view.innerHTML = `<div class="empty">Пока нет ни одной игры. Игры добавляются из своих репозиториев (см. README).</div>`;
+    view.innerHTML = head + `<div class="empty">Пока нет ни одной игры.${me ? ' Добавьте первую — кнопка выше.' : ''}</div>`;
     return;
   }
-  view.innerHTML = `<div class="games">${games
+  view.innerHTML = head + `<div class="games">${games
     .map(
       (g) => `
       <section class="card">
@@ -140,7 +143,7 @@ const FILTERS = [
 let state = null; // { slug, lang, game, data, params }
 
 async function renderGame(slug, lang, q) {
-  const { game, stats } = await api(`/games/${encodeURIComponent(slug)}`);
+  const { game, stats, canManage } = await api(`/games/${encodeURIComponent(slug)}`);
   if (!lang || !game.languages.includes(lang)) {
     location.replace(href(slug, game.languages[0]));
     return;
@@ -176,7 +179,11 @@ async function renderGame(slug, lang, q) {
           <span>Устарело <b>${st.stale}</b></span>
           <span>Всего <b>${st.total}</b></span>
           ${game.languages.length > 1 ? `<span>Язык: <select data-act="lang">${game.languages.map((l) => `<option value="${esc(l)}" ${l === lang ? 'selected' : ''}>${esc(langName(l))}</option>`).join('')}</select></span>` : ''}
+          <span class="spacer"></span>
+          ${st.approved ? `<button class="btn small" data-act="download" data-slug="${esc(slug)}" data-lang="${esc(lang)}">Скачать перевод .zip</button>` : ''}
+          ${canManage ? `<a class="btn small" href="#/g/${encodeURIComponent(slug)}/settings">Настройки игры</a>` : ''}
         </div>
+        ${!st.total ? `<div class="empty">В игре пока нет строк.${canManage ? ` Загрузите оригинальные файлы в <a href="#/g/${encodeURIComponent(slug)}/settings">настройках игры</a>.` : ''}</div>` : ''}
         <div class="toolbar">
           <nav class="tabs">${FILTERS.map(([id, name]) => `<a href="${href(slug, lang, { ...params, filter: id, page: 1 })}" class="${params.filter === id ? 'on' : ''}">${name}</a>`).join('')}</nav>
           <input class="search" type="search" placeholder="Поиск по ключу, оригиналу или переводу" value="${esc(params.q)}" data-act="search">
@@ -348,3 +355,381 @@ window.addEventListener('hashchange', () => {
 await loadMe();
 renderAccount();
 route();
+
+// ======================================================================
+// Управление играми: создание, настройки, загрузка файлов, модераторы
+// ======================================================================
+
+const FORMATS = {
+  rimworld: { name: 'RimWorld (Keyed / DefInjected XML)', ext: ['.xml'], hint: 'Папки вида Core/Keyed, Core/DefInjected/…, Royalty/… — как в Data/<DLC>/Languages/English' },
+  json: { name: 'JSON, плоский { "key": "text" }', ext: ['.json'], hint: 'Один или несколько .json файлов' },
+  'json-nested': { name: 'JSON, вложенный { "menu": { "start": "…" } }', ext: ['.json'], hint: 'Один или несколько .json файлов; ключи хранятся через точку' },
+};
+
+const slugify = (t) =>
+  t.toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 63);
+
+const parseLangs = (v) => v.split(/[\s,;]+/).map((x) => x.trim()).filter(Boolean);
+
+async function renderNewGame() {
+  crumbs.innerHTML = `<a href="#/">Игры</a> / Новая игра`;
+  document.title = 'Новая игра · LocalizationForum';
+  if (!me) {
+    view.innerHTML = `<div class="empty">Чтобы добавить игру, <button class="btn primary" data-act="login">войдите через GitHub</button></div>`;
+    return;
+  }
+  view.innerHTML = `
+    <form class="panel form" data-form="new-game">
+      <h1>Новая игра</h1>
+      <label>Название<input name="title" required maxlength="200" placeholder="RimWorld" autocomplete="off"></label>
+      <label>Адрес на сайте<input name="slug" required pattern="[a-z0-9][a-z0-9\\-]{0,62}" placeholder="rimworld" autocomplete="off">
+        <small>Латиница в нижнем регистре, цифры и дефис. Потом не меняется.</small></label>
+      <label>Формат файлов<select name="format">${Object.entries(FORMATS).map(([id, f]) => `<option value="${id}">${esc(f.name)}</option>`).join('')}</select></label>
+      <div class="row2">
+        <label>Язык оригинала<input name="sourceLang" value="en" required></label>
+        <label>Языки перевода<input name="languages" value="ru" required placeholder="ru, uk"><small>Коды через запятую: ru, uk, be, pt-BR</small></label>
+      </div>
+      <label>Репозиторий GitHub (необязательно)<input name="repo" placeholder="owner/name">
+        <small>Если перевод будет выгружаться в репо игры через Actions. Можно указать позже.</small></label>
+      <div class="actions"><button class="btn primary">Создать</button><a class="btn" href="#/">Отмена</a></div>
+      <ul class="issues"></ul>
+    </form>`;
+  const form = view.querySelector('form');
+  let slugTouched = false;
+  form.slug.addEventListener('input', () => (slugTouched = true));
+  form.title.addEventListener('input', () => {
+    if (!slugTouched) form.slug.value = slugify(form.title.value);
+  });
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const f = form.elements;
+    try {
+      const r = await api('/games', {
+        method: 'POST',
+        body: {
+          title: f.title.value,
+          slug: f.slug.value,
+          format: f.format.value,
+          sourceLang: f.sourceLang.value.trim(),
+          languages: parseLangs(f.languages.value),
+          repo: f.repo.value,
+        },
+      });
+      toast('Игра создана. Теперь загрузите оригинальные файлы.');
+      location.hash = `#/g/${encodeURIComponent(r.slug)}/settings`;
+    } catch (err) {
+      form.querySelector('.issues').innerHTML = `<li class="error">${esc(err.message)}</li>`;
+    }
+  });
+}
+
+async function renderSettings(slug) {
+  const data = await api(`/games/${encodeURIComponent(slug)}/manage`);
+  const { game, moderators, files, strings } = data;
+  const fmt = FORMATS[game.format] || { name: game.format, ext: [], hint: '' };
+  crumbs.innerHTML = `<a href="#/">Игры</a> / <a href="#/g/${encodeURIComponent(slug)}">${esc(game.title)}</a> / Настройки`;
+  document.title = `Настройки — ${game.title} · LocalizationForum`;
+  const langOptions = (withAll) =>
+    (withAll ? `<option value="*">все языки (управление игрой)</option>` : '') +
+    game.languages.map((l) => `<option value="${esc(l)}">${esc(l)} — ${esc(langName(l))}</option>`).join('');
+
+  view.innerHTML = `
+    <div class="page-head"><h1>${esc(game.title)}</h1><a class="btn" href="#/g/${encodeURIComponent(slug)}">← К переводу</a></div>
+    <div class="settings">
+      <form class="panel form" data-form="settings">
+        <h2>Основное</h2>
+        <label>Название<input name="title" value="${esc(game.title)}" required maxlength="200"></label>
+        <div class="row2">
+          <label>Языки перевода<input name="languages" value="${esc(game.languages.join(', '))}" required>
+            <small>Добавьте код через запятую. Если убрать язык, его переводы сохранятся, но будут скрыты.</small></label>
+          <label>Репозиторий GitHub<input name="repo" value="${esc(game.repo || '')}" placeholder="owner/name"></label>
+        </div>
+        <p class="muted">Адрес: <span class="mono">${esc(game.slug)}</span> · формат: ${esc(fmt.name)} · оригинал: ${esc(game.source_lang)}</p>
+        <div class="actions"><button class="btn primary">Сохранить</button></div>
+        <ul class="issues"></ul>
+      </form>
+
+      <form class="panel form" data-form="source">
+        <h2>Оригинальные файлы</h2>
+        <p class="muted">Сейчас: <b data-count="files">${files}</b> файлов, <b data-count="strings">${strings}</b> строк. ${esc(fmt.hint)}</p>
+        ${filePicker(fmt)}
+        <label class="check"><input type="checkbox" name="replace"> Это полный набор файлов: скрыть строки из файлов, которых нет в загрузке</label>
+        <div class="actions"><button class="btn primary">Загрузить</button></div>
+        <ul class="issues"></ul>
+      </form>
+
+      <form class="panel form" data-form="translation">
+        <h2>Импорт готового перевода</h2>
+        <p class="muted">Файлы перевода в том же формате и с теми же путями, что и оригинал. Строки станут утверждёнными.</p>
+        <label>Язык<select name="lang">${langOptions(false)}</select></label>
+        ${filePicker(fmt)}
+        <label class="check"><input type="checkbox" name="overwrite"> Перезаписать уже утверждённые строки</label>
+        <div class="actions"><button class="btn primary">Импортировать</button></div>
+        <ul class="issues"></ul>
+      </form>
+
+      <form class="panel form" data-form="moderators">
+        <h2>Модераторы</h2>
+        <ul class="mods">${moderators
+          .map(
+            (m) => `<li><span>${m.avatar_url ? `<img class="avatar" src="${esc(m.avatar_url)}&s=40" alt="">` : ''}<b>${esc(m.login)}</b>
+              <span class="muted">${m.lang === '*' ? 'все языки, управление игрой' : esc(m.lang)}</span></span>
+              <button type="button" class="link" data-act="mod-remove" data-login="${esc(m.login)}" data-lang="${esc(m.lang)}">снять</button></li>`,
+          )
+          .join('')}</ul>
+        <div class="row2">
+          <label>Логин GitHub<input name="login" placeholder="nickname" required><small>Человек должен хотя бы раз войти на сайт.</small></label>
+          <label>Права<select name="lang">${langOptions(true)}</select></label>
+        </div>
+        <div class="actions"><button class="btn primary">Назначить</button></div>
+        <ul class="issues"></ul>
+      </form>
+
+      <form class="panel form" data-form="rules">
+        <h2>Правила проверки вариантов</h2>
+        <p class="muted">Для каждого языка — список регулярных выражений. Совпадение даёт предупреждение (warn) или запрещает отправку (error).</p>
+        <textarea name="rules" class="mono" rows="8" spellcheck="false">${esc(JSON.stringify(game.rules && Object.keys(game.rules).length ? game.rules : { [game.languages[0]]: [{ pattern: '\\s-\\s', message: 'Между словами нужно длинное тире —', level: 'warn' }] }, null, 2))}</textarea>
+        <div class="actions"><button class="btn primary">Сохранить правила</button></div>
+        <ul class="issues"></ul>
+      </form>
+
+      ${me?.is_admin ? `
+      <form class="panel form danger" data-form="delete">
+        <h2>Удалить игру</h2>
+        <p class="muted">Удалятся все строки, варианты, голоса и утверждённые переводы. Отменить нельзя.</p>
+        <label><span>Введите адрес игры <b class="mono">${esc(game.slug)}</b> для подтверждения</span><input name="confirm" autocomplete="off"></label>
+        <div class="actions"><button class="btn bad">Удалить навсегда</button></div>
+        <ul class="issues"></ul>
+      </form>` : ''}
+    </div>`;
+
+  const forms = Object.fromEntries([...view.querySelectorAll('form[data-form]')].map((f) => [f.dataset.form, f]));
+  const report = (form, items) => (form.querySelector('.issues').innerHTML = items.map(([lvl, msg]) => `<li class="${lvl}">${esc(msg)}</li>`).join(''));
+  const busy = (form, on) => form.querySelectorAll('button').forEach((b) => (b.disabled = on));
+  const onSubmit = (name, fn) =>
+    forms[name]?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const form = forms[name];
+      busy(form, true);
+      try {
+        await fn(form);
+      } catch (err) {
+        report(form, [['error', err.message]]);
+      } finally {
+        busy(form, false);
+      }
+    });
+
+  onSubmit('settings', async (f) => {
+    await api(`/games/${encodeURIComponent(slug)}/settings`, {
+      method: 'POST',
+      body: { title: f.title.value, languages: parseLangs(f.languages.value), repo: f.repo.value },
+    });
+    toast('Сохранено');
+    renderSettings(slug);
+  });
+
+  onSubmit('source', async (f) => {
+    const files = await collectFiles(f, fmt);
+    if (!files.length) throw new Error(`Не выбраны файлы ${fmt.ext.join(', ')}`);
+    const total = { added: 0, changed: 0, removed: 0, unchanged: 0 };
+    const errors = [];
+    const parts = batches(files);
+    for (let i = 0; i < parts.length; i++) {
+      report(f, [['warn', `Загрузка… пачка ${i + 1} из ${parts.length}`]]);
+      const last = i === parts.length - 1;
+      const r = await api(`/games/${encodeURIComponent(slug)}/source`, {
+        method: 'POST',
+        body: { files: parts[i], paths: last && f.replace.checked ? files.map((x) => x.path) : undefined },
+      });
+      for (const k of Object.keys(total)) total[k] += r[k];
+      errors.push(...r.errors);
+    }
+    report(f, [
+      ['ok', `Готово: новых ${total.added}, изменено ${total.changed}, скрыто ${total.removed}, без изменений ${total.unchanged}`],
+      ...errors.map((e) => ['error', e]),
+    ]);
+    toast('Исходники загружены');
+    const fresh = await api(`/games/${encodeURIComponent(slug)}/manage`);
+    f.querySelector('[data-count=files]').textContent = fresh.files;
+    f.querySelector('[data-count=strings]').textContent = fresh.strings;
+  });
+
+  onSubmit('translation', async (f) => {
+    const files = await collectFiles(f, fmt);
+    if (!files.length) throw new Error(`Не выбраны файлы ${fmt.ext.join(', ')}`);
+    const total = { imported: 0, skipped: 0, unknown: 0 };
+    for (const part of batches(files)) {
+      const r = await api(`/games/${encodeURIComponent(slug)}/translation`, {
+        method: 'POST',
+        body: { lang: f.lang.value, files: part, overwrite: f.overwrite.checked },
+      });
+      for (const k of Object.keys(total)) total[k] += r[k];
+    }
+    report(f, [['ok', `Утверждено ${total.imported}, уже было ${total.skipped}, не найдено в оригинале ${total.unknown}`]]);
+  });
+
+  onSubmit('moderators', async (f) => {
+    await api(`/games/${encodeURIComponent(slug)}/moderators`, { method: 'POST', body: { login: f.login.value, lang: f.lang.value } });
+    toast('Модератор назначен');
+    renderSettings(slug);
+  });
+
+  onSubmit('rules', async (f) => {
+    let rules;
+    try {
+      rules = JSON.parse(f.rules.value || '{}');
+    } catch (err) {
+      throw new Error('Это не JSON: ' + err.message);
+    }
+    await api(`/games/${encodeURIComponent(slug)}/settings`, { method: 'POST', body: { rules } });
+    report(f, [['ok', 'Правила сохранены']]);
+  });
+
+  onSubmit('delete', async (f) => {
+    if (f.confirm.value.trim() !== game.slug) throw new Error('Адрес не совпадает');
+    await api(`/games/${encodeURIComponent(slug)}`, { method: 'DELETE' });
+    toast('Игра удалена');
+    location.hash = '#/';
+  });
+}
+
+function filePicker(fmt) {
+  return `
+    <div class="picker">
+      <label class="btn small">Выбрать файлы<input type="file" name="files" multiple accept="${fmt.ext.join(',')}" hidden></label>
+      <label class="btn small">Выбрать папку<input type="file" name="folder" webkitdirectory hidden></label>
+      <span class="muted picked">ничего не выбрано</span>
+    </div>
+    <label>Путь внутри оригинала (необязательно)<input name="prefix" placeholder="${fmt.ext.includes('.xml') ? 'Core/Keyed' : 'например locales'}">
+      <small>Добавляется перед путями файлов. Для папки берётся её внутренняя структура без имени самой папки.</small></label>`;
+}
+
+// Подпись «выбрано N файлов» у пикера
+document.addEventListener('change', (e) => {
+  const input = e.target;
+  if (!input.matches?.('.picker input[type=file]')) return;
+  const form = input.closest('form');
+  const n = [...form.querySelectorAll('.picker input[type=file]')].reduce((s, i) => s + i.files.length, 0);
+  form.querySelector('.picked').textContent = n ? `выбрано файлов: ${n}` : 'ничего не выбрано';
+});
+
+async function collectFiles(form, fmt) {
+  const prefix = form.prefix.value.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+  const out = [];
+  const add = async (file, rel) => {
+    if (fmt.ext.length && !fmt.ext.some((x) => file.name.toLowerCase().endsWith(x))) return;
+    const path = [prefix, rel].filter(Boolean).join('/');
+    out.push({ path, content: await file.text() });
+  };
+  for (const f of form.files.files) await add(f, f.name);
+  for (const f of form.folder.files) await add(f, (f.webkitRelativePath || f.name).split('/').slice(1).join('/') || f.name);
+  return out;
+}
+
+function batches(files, limit = 3_000_000) {
+  const out = [[]];
+  let size = 0;
+  for (const f of files) {
+    const s = new Blob([f.content]).size + f.path.length + 32;
+    if (size + s > limit && out.at(-1).length) {
+      out.push([]);
+      size = 0;
+    }
+    out.at(-1).push(f);
+    size += s;
+  }
+  return out;
+}
+
+// ---------- скачивание перевода .zip (собирается в браузере) ----------
+
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+
+function crc32(bytes) {
+  let c = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+/** Простой zip без сжатия (метод store) — без библиотек. */
+function makeZip(files) {
+  const enc = new TextEncoder();
+  const chunks = [];
+  const central = [];
+  let offset = 0;
+  for (const f of files) {
+    const name = enc.encode(f.path);
+    const data = enc.encode(f.content);
+    const crc = crc32(data);
+    const local = new DataView(new ArrayBuffer(30));
+    local.setUint32(0, 0x04034b50, true);
+    local.setUint16(4, 20, true);
+    local.setUint16(6, 0x0800, true); // UTF-8 имена
+    local.setUint32(14, crc, true);
+    local.setUint32(18, data.length, true);
+    local.setUint32(22, data.length, true);
+    local.setUint16(26, name.length, true);
+    chunks.push(local.buffer, name, data);
+    const cen = new DataView(new ArrayBuffer(46));
+    cen.setUint32(0, 0x02014b50, true);
+    cen.setUint16(4, 20, true);
+    cen.setUint16(6, 20, true);
+    cen.setUint16(8, 0x0800, true);
+    cen.setUint32(16, crc, true);
+    cen.setUint32(20, data.length, true);
+    cen.setUint32(24, data.length, true);
+    cen.setUint16(28, name.length, true);
+    cen.setUint32(42, offset, true);
+    central.push(cen.buffer, name);
+    offset += 30 + name.length + data.length;
+  }
+  const cenSize = central.reduce((s, b) => s + b.byteLength, 0);
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true);
+  end.setUint16(8, files.length, true);
+  end.setUint16(10, files.length, true);
+  end.setUint32(12, cenSize, true);
+  end.setUint32(16, offset, true);
+  return new Blob([...chunks, ...central, end.buffer], { type: 'application/zip' });
+}
+
+document.addEventListener('click', async (e) => {
+  const el = e.target.closest('[data-act="download"], [data-act="mod-remove"]');
+  if (!el) return;
+  try {
+    if (el.dataset.act === 'download') {
+      el.disabled = true;
+      const { slug, lang } = el.dataset;
+      const r = await api(`/games/${encodeURIComponent(slug)}/export?lang=${encodeURIComponent(lang)}`);
+      if (!r.files.length) return toast('Утверждённых строк пока нет');
+      const url = URL.createObjectURL(makeZip(r.files.map((f) => ({ path: `${lang}/${f.path}`, content: f.content }))));
+      const a = Object.assign(document.createElement('a'), { href: url, download: `${slug}-${lang}.zip` });
+      document.body.append(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      toast(`Скачано: ${r.translated} из ${r.total} строк`);
+    } else {
+      const slug = parseRoute().parts[1];
+      await api(`/games/${encodeURIComponent(slug)}/moderators`, { method: 'POST', body: { login: el.dataset.login, lang: el.dataset.lang, remove: true } });
+      toast('Права сняты');
+      renderSettings(slug);
+    }
+  } catch (err) {
+    toast(err.message);
+  } finally {
+    el.disabled = false;
+  }
+});
