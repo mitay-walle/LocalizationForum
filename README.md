@@ -1,80 +1,70 @@
 # LocalizationForum
 
-Коллективный перевод игр в духе Zone of Games: участники предлагают варианты перевода строк, голосуют, модератор утверждает. Утверждённый перевод автоматически попадает в репозиторий игры в её родном формате, а релизы собираются через GitHub Releases.
+**Бесплатный коллективный перевод игр** — в духе Zone of Games. Участники предлагают варианты перевода каждой строки, голосуют за лучшие, а модераторы утверждают итоговый текст. Готовый перевод выходит релизом, который игроку остаётся только распаковать в папку игры.
 
-```
-GitHub Pages (site/)  ──чтение/запись──▶  Vercel Function (api/ → src/app.ts)  ──▶  Neon Postgres
-                                                     ▲
-             репо игры (из game-template/) ──Actions─┘  импорт исходников / выгрузка перевода / релизы
-```
+**Сайт: https://localization-forum.vercel.app/**
 
-- **Сайт** — статический, без сборки (`site/`), публикуется на GitHub Pages; заодно доступен и на Vercel.
-- **API** — одна функция Vercel на [Hono](https://hono.dev) (`src/app.ts`), регион `fra1`.
-- **БД** — Postgres (Neon, бесплатный тариф). Миграции применяются автоматически при каждом деплое.
-- **Вход** — GitHub OAuth. Токен GitHub не хранится, сессия — подписанный JWT.
-- **Форматы игр** — `src/formats/`: `rimworld` (Keyed/DefInjected XML), `json`, `json-nested`. Новый формат = файл с `parse`/`serialize`.
-- **Проверки варианта** — `src/validate.ts`: плейсхолдеры `{0}`/`{PAWN_x}`/`%d`, теги `<color>`/`[b]`, `\n` + правила языка из `rules/<lang>.json` репо игры.
+*English version below.*
 
-## Развёртывание (один раз)
+## Как участвовать
 
-1. **Vercel → Add New → Project → Import** этого репозитория. Framework: Other, остальное подхватится из `vercel.json`.
-2. **База:** в проекте Vercel → Storage → Create Database → **Neon** (Free). Vercel сам добавит `DATABASE_URL`. Регион — Frankfurt.
-3. **GitHub OAuth App:** GitHub → Settings → Developer settings → OAuth Apps → New.
-   - Homepage URL: `https://<user>.github.io/LocalizationForum/`
-   - Callback URL: `https://<проект>.vercel.app/api/auth/callback`
-4. **Переменные окружения** в Vercel (Settings → Environment Variables), см. `.env.example`:
-   `JWT_SECRET`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `SITE_ORIGINS`, `ADMIN_LOGINS`, `SYNC_TOKEN`, по желанию `GITHUB_DISPATCH_TOKEN`. После — Redeploy.
-5. **GitHub Pages:** Settings → Pages → Source: **GitHub Actions**. Settings → Secrets and variables → Actions → **Variables** → `FORUM_API_URL = https://<проект>.vercel.app`. Запустить workflow **Pages**.
+1. **Войдите через GitHub** — кнопка в правом верхнем углу. Читать и скачивать можно и без входа.
+2. **Выберите игру и язык** на главной странице. Полоска показывает, сколько уже переведено.
+3. **Переводите.** У каждой строки виден оригинал и контекст (кто говорит, где строка в игре). Впишите свой вариант и нажмите «Предложить» (или <kbd>Ctrl+Enter</kbd>). Сайт сразу подскажет, если вы потеряли плейсхолдеры вроде `{0}` или теги.
+4. **Голосуйте** кнопкой ▲ за вариант, который считаете лучшим. У строки один ваш голос: проголосуете за другой вариант — голос перейдёт к нему. Если хороший вариант уже есть, лучше поддержать его, чем дублировать.
+5. Ошиблись — нажмите «Отменить» в уведомлении или <kbd>Ctrl+Z</kbd>.
 
-Проверка: `https://<проект>.vercel.app/api/health` → `{"ok":true}`.
+Фильтры «Без перевода», «Есть варианты», «Устарело» и поиск помогают найти, где нужна помощь. Язык интерфейса сайта переключается в шапке (русский, English, українська, Deutsch, español, français, português, polski, 中文, 日本語), там же ⚙ — тема и размер текста.
 
-## Добавить игру
+## Этапы перевода
 
-**С сайта** (проще): войти → «+ Новая игра» → указать название, формат и языки → в «Настройках игры» загрузить оригинальные файлы (файлы или целую папку). Там же: языки, импорт готового перевода, модераторы, правила проверок. Создатель игры получает права на все её языки. Скачать перевод .zip можно со страницы перевода.
+Каждый язык игры проходит три этапа — текущий виден над списком строк:
 
-**Через репозиторий игры** (если перевод должен коммититься в GitHub и выходить релизами):
+| Этап | Что происходит |
+|---|---|
+| **Групповой перевод** | Все предлагают варианты и голосуют. |
+| **Апрув** | Модераторы вычитывают и утверждают строки; предлагать и голосовать могут только они. |
+| **Готово** | Перевод завершён и закрыт для изменений. |
 
-1. Скопировать `game-template/` в новый репозиторий (например `<user>/rimworld-loc`), заполнить `game.json`, положить оригинал в `source/`.
-2. В репо игры: Variables → `FORUM_API_URL`, Secrets → `FORUM_SYNC_TOKEN` (= `SYNC_TOKEN` форума).
-3. Push → workflow **Import source** загрузит строки, игра появится на сайте.
-4. Модераторы: администратор (из `ADMIN_LOGINS`) назначает их запросом
-   `POST /api/admin/moderators {"game":"slug","lang":"ru","login":"nick"}` (lang `*` — все языки). Человек должен хотя бы раз войти на сайт.
+Утверждённый текст строки — это то, что попадёт в игру. Если в новой версии игры оригинал строки изменился, перевод помечается как «устаревший» и его стоит проверить.
 
-Подробнее — `game-template/README.md`.
+## Правила и модерация
 
-## Разработка
+- **Лимиты против спама.** У одной строки можно предложить не больше 3 своих вариантов (и не больше 30 вариантов от всех вместе), и не больше 500 вариантов в час по всему сайту. Если лимит исчерпан, удалите свой неудачный вариант или проголосуйте за лучший. Модераторов языка лимиты не касаются.
+- **Баны.** За спам и вандализм управляющий игрой может заблокировать участника в своей игре, а администраторы — на всём форуме: на день, неделю, месяц или навсегда, при необходимости удалив все его варианты и голоса (утверждённые переводы не трогаются). Заблокированный видит причину и срок на странице игры и может читать, но не предлагать, не голосовать и не загружать файлы.
 
-```bash
-npm install
-cp .env.example .env        # DATABASE_URL на локальный Postgres или ветку Neon, DEV_AUTH=1
-npm run migrate && npm run seed
-npm run dev                 # http://localhost:3000 — сайт + API
-```
+## Как получить готовый перевод
 
-С `DEV_AUTH=1` вход без GitHub: `http://localhost:3000/api/auth/dev?login=admin` (на Vercel выключен всегда). Логин из `ADMIN_LOGINS` получает права администратора.
+1. На главной у игры нажмите **«Скачать релизы перевода»** — откроется страница Releases её репозитория на GitHub.
+2. Возьмите самый новый релиз своего языка: тег вида `ru-1.0` (язык-версия).
+3. В разделе **Assets** скачайте zip-архив и **распакуйте его поверх файлов игры** с заменой — структура папок в архиве такая же, как у оригинала.
 
-```bash
-npm test                    # юнит-тесты; интеграционные — если задан TEST_DATABASE_URL (база будет очищена)
-npm run typecheck
-```
+Не скачивайте исходный код репозитория (Code → Download ZIP): там оригиналы и все языки сразу. Самую свежую, ещё не выпущенную версию утверждённых строк можно скачать кнопкой «Скачать перевод .zip» на странице перевода.
 
-## API
+## Как добавить свою игру
 
-| Метод | Путь | Кто |
-|---|---|---|
-| GET | `/api/games`, `/api/games/:slug`, `/api/games/:slug/files?lang=` | все |
-| GET | `/api/games/:slug/strings?lang=&file=&filter=all\|untranslated\|voting\|approved\|stale&q=&page=` | все |
-| GET | `/api/games/:slug/export?lang=`, `/api/games/:slug/credits?lang=` | все |
-| POST | `/api/strings/:id/variants` `{lang, text, check?}` | вошедшие |
-| POST/DELETE | `/api/variants/:id/vote` | вошедшие |
-| DELETE | `/api/variants/:id` | автор / модератор |
-| POST/DELETE | `/api/strings/:id/approve` `{lang, variantId \| text}` | модератор |
-| POST | `/api/games` `{slug, title, format, sourceLang, languages, repo?}` | вошедшие (создатель → модератор `*`) |
-| GET | `/api/games/:slug/manage` | модератор `*` / админ |
-| POST | `/api/games/:slug/settings` `{title?, languages?, repo?, rules?}` | модератор `*` / админ |
-| POST | `/api/games/:slug/source` `{files, paths?}` | модератор `*` / админ |
-| POST | `/api/games/:slug/translation` `{lang, files, overwrite?}` | модератор `*` / админ |
-| POST | `/api/games/:slug/moderators` `{login, lang, remove?}` | модератор `*` / админ |
-| DELETE | `/api/games/:slug` | администратор |
-| POST | `/api/admin/moderators` | администратор |
-| POST | `/api/admin/import`, `/api/admin/import/finish` | Actions репо игры (`X-Sync-Token`) |
+1. Войдите и нажмите **«+ Новая игра»**: название, адрес, языки оригинала и перевода.
+2. **Выберите формат файлов.** Есть встроенные (XML RimWorld, JSON и другие). Если вашего нет — в разделе **«Форматы файлов»** можно описать свой построчный формат без программирования и сразу проверить его на настоящем файле.
+3. В **«Настройках игры»** загрузите оригинальные файлы (по одному или целой папкой). Строки появятся на сайте, и можно звать переводчиков.
+4. Там же — модераторы по языкам, правила проверки, импорт уже готового перевода и кнопка **«Опубликовать в GitHub»**: она выкладывает перевод в репозиторий игры и выпускает релизы для каждого языка.
+
+## ИИ-ассистенты (MCP)
+
+К форуму можно подключить Claude или другой ИИ-ассистент по протоколу MCP: он найдёт строки, предложит переводы и проголосует от вашего имени, а его варианты получат значок «ИИ». Адрес сервера и инструкции — в меню ⚙ → «Токены и подключение MCP». Решение по-прежнему принимают люди-модераторы.
+
+---
+
+## English
+
+**LocalizationForum** is a free, community-driven game translation site in the spirit of Zone of Games: people propose translations for each line, vote for the best ones, and moderators approve the final text. Site: **https://localization-forum.vercel.app/** (switch the interface language in the header).
+
+- **Take part:** sign in with GitHub, pick a game and a language, propose your variant or vote ▲ for the best one (one vote per line — voting for another variant moves your vote).
+- **Stages:** *Group translation* (everyone proposes and votes) → *Review* (moderators approve) → *Done* (closed).
+- **Get the translation:** open the game's GitHub **Releases**, take the newest release for your language (tag `<language>-<version>`, e.g. `ru-1.0`), download the zip from **Assets** and unpack it over the game folder. Don't download the repository source.
+- **Add your game:** *+ New game* → choose or describe the file format → upload the original files in *Game settings* → *Publish to GitHub* when ready.
+- **Rules:** up to 3 own variants per line (30 in total per line) and 500 per hour; language moderators are exempt. Spammers can be banned per game by its managers or site-wide by admins — banned users can only read.
+- **AI assistants:** connect Claude or another assistant via MCP (⚙ → Tokens and MCP connection); its suggestions are marked “AI”, and humans still approve.
+
+---
+
+Для разработчиков: архитектура, развёртывание, локальный запуск и API — [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
