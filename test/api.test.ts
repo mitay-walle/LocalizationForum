@@ -56,6 +56,8 @@ describe.skipIf(!url)('api', async () => {
   afterAll(() => closeDb());
 
   let strings: any[] = [];
+  let carol = '';
+  const carolToken = () => carol;
 
   it('imports source via sync token', async () => {
     expect((await call('POST', '/admin/import', { body: { game, files: [] } })).status).toBe(401);
@@ -163,7 +165,7 @@ describe.skipIf(!url)('api', async () => {
   });
 
   it('site: create game, settings, upload source/translation, moderators', async () => {
-    const carol = await login('carol');
+    carol = await login('carol');
     const dave = await login('dave');
     const newGame = { slug: 'site-game', title: 'Site Game', format: 'json-nested', sourceLang: 'en', languages: ['ru'] };
     expect((await call('POST', '/games', { body: newGame })).status).toBe(401);
@@ -207,5 +209,44 @@ describe.skipIf(!url)('api', async () => {
     expect((await call('DELETE', '/games/site-game', { token: carol })).status).toBe(403);
     expect((await call('DELETE', '/games/site-game', { token: boss })).status).toBe(200);
     expect((await call('GET', '/games/site-game')).status).toBe(404);
+  });
+
+  it('formats: presets, custom formats, preview, gunpoint export over original', async () => {
+    const erin = await login('erin');
+    const list = (await call('GET', '/formats')).json.formats;
+    expect(list.map((f: any) => f.slug)).toEqual(expect.arrayContaining(['rimworld', 'json', 'gunpoint', 'properties']));
+
+    const gpc = readFileSync(join(import.meta.dirname, 'fixtures', 'gunpoint', 'Intro.gpc'), 'utf8');
+    const prev = await call('POST', '/formats/preview', { token: erin, body: { format: 'gunpoint', path: 'Scripts/Intro.gpc', content: gpc } });
+    expect(prev.json).toMatchObject({ matches: true, count: 4, roundTrip: true });
+    expect((await call('POST', '/formats/preview', { token: erin, body: { config: { extensions: ['.x'], mode: 'lines', skip: ['['] }, path: 'a.x', content: '' } })).status).toBe(422);
+
+    const cfg = { extensions: ['.dlg'], mode: 'keyValue', text: '^(?<key>\\w+)\\|(?<text>.*)$' };
+    expect((await call('POST', '/formats', { token: erin, body: { slug: 'gunpoint', title: 'x', config: cfg } })).status).toBe(422);
+    expect((await call('POST', '/formats', { token: erin, body: { slug: 'my-dlg', title: 'Мой .dlg', config: cfg } })).status).toBe(201);
+    expect((await call('POST', '/formats/my-dlg', { token: boss, body: { title: 'Мой .dlg v2' } })).status).toBe(200);
+    expect((await call('POST', '/formats/my-dlg', { token: carolToken(), body: { title: 'x' } })).status).toBe(403);
+
+    // игра на пользовательском формате
+    expect((await call('POST', '/games', { token: erin, body: { slug: 'dlg-game', title: 'DLG', format: 'my-dlg', languages: ['ru'] } })).status).toBe(201);
+    const up = await call('POST', '/games/dlg-game/source', { token: erin, body: { files: [{ path: 'a.dlg', content: 'hi|Hello {0}\nbye|Bye' }] } });
+    expect(up.json).toMatchObject({ added: 2 });
+
+    // Gunpoint: перевод собирается поверх оригинала, непереведённое остаётся оригиналом
+    expect((await call('POST', '/games', { token: erin, body: { slug: 'gp', title: 'Gunpoint', format: 'gunpoint', languages: ['ru'] } })).status).toBe(201);
+    expect((await call('POST', '/games/gp/source', { token: erin, body: { files: [{ path: 'Scripts/Intro.gpc', content: gpc }] } })).json).toMatchObject({ added: 4 });
+    const strs = (await call('GET', '/games/gp/strings?lang=ru', { token: erin })).json.strings;
+    const who = strs.find((x: any) => x.key === 'L2');
+    expect(who.context).toBe('Them');
+    const bad = await call('POST', `/strings/${who.id}/approve`, { token: erin, body: { lang: 'ru', text: '42' } });
+    expect(bad.status).toBe(422);
+    expect((await call('POST', `/strings/${who.id}/approve`, { token: erin, body: { lang: 'ru', text: 'Ты кто такой?' } })).status).toBe(200);
+    const exp = (await call('GET', '/games/gp/export?lang=ru')).json;
+    expect(exp.translated).toBe(1);
+    expect(exp.files).toEqual([{ path: 'Scripts/Intro.gpc', content: gpc.replace('Who are you?', 'Ты кто такой?') }]);
+
+    // полная замена исходников удаляет и сохранённые оригиналы
+    await call('POST', '/games/gp/source', { token: erin, body: { files: [{ path: 'Scripts/B.gpc', content: 'Me:\r\nYes.\r\n0' }], paths: ['Scripts/B.gpc'] } });
+    expect((await call('GET', '/games/gp/export?lang=ru')).json.files).toEqual([]);
   });
 });
