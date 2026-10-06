@@ -95,6 +95,7 @@ async function route() {
   const { parts, q } = parseRoute();
   try {
     if (parts[0] === 'new') await renderNewGame();
+    else if (parts[0] === 'formats') await renderFormats(parts[1], q);
     else if (parts[0] === 'g' && parts[1] && parts[2] === 'settings') await renderSettings(parts[1]);
     else if (parts[0] === 'g' && parts[1]) await renderGame(parts[1], parts[2], q);
     else await renderHome();
@@ -108,7 +109,7 @@ async function renderHome() {
   crumbs.innerHTML = '';
   document.title = 'LocalizationForum';
   const { games } = await api('/games');
-  const head = `<div class="page-head"><h1>Игры</h1>${me ? `<a class="btn primary" href="#/new">+ Новая игра</a>` : `<button class="btn" data-act="login">Войдите, чтобы добавить игру</button>`}</div>`;
+  const head = `<div class="page-head"><h1>Игры</h1><span class="spacer"></span><a class="btn" href="#/formats">Форматы файлов</a>${me ? `<a class="btn primary" href="#/new">+ Новая игра</a>` : `<button class="btn" data-act="login">Войдите, чтобы добавить игру</button>`}</div>`;
   if (!games.length) {
     view.innerHTML = head + `<div class="empty">Пока нет ни одной игры.${me ? ' Добавьте первую — кнопка выше.' : ''}</div>`;
     return;
@@ -360,11 +361,34 @@ route();
 // Управление играми: создание, настройки, загрузка файлов, модераторы
 // ======================================================================
 
-const FORMATS = {
-  rimworld: { name: 'RimWorld (Keyed / DefInjected XML)', ext: ['.xml'], hint: 'Папки вида Core/Keyed, Core/DefInjected/…, Royalty/… — как в Data/<DLC>/Languages/English' },
-  json: { name: 'JSON, плоский { "key": "text" }', ext: ['.json'], hint: 'Один или несколько .json файлов' },
-  'json-nested': { name: 'JSON, вложенный { "menu": { "start": "…" } }', ext: ['.json'], hint: 'Один или несколько .json файлов; ключи хранятся через точку' },
+const FORMAT_HINTS = {
+  rimworld: 'Папки вида Core/Keyed, Core/DefInjected/…, Royalty/… — как в Data/<DLC>/Languages/English',
+  json: 'Один или несколько .json файлов',
+  'json-nested': 'Один или несколько .json файлов; ключи хранятся через точку',
+  gunpoint: 'Папка Scripts с файлами .gpc. Переводятся только строки реплик, номера и пустые строки сохраняются',
 };
+
+let formatsCache = null;
+async function loadFormats(force = false) {
+  if (!formatsCache || force) formatsCache = (await api('/formats')).formats;
+  return formatsCache;
+}
+const fmtInfo = (list, slug) => {
+  const f = list.find((x) => x.slug === slug) || { slug, title: slug, extensions: [], kind: 'custom' };
+  return { ...f, name: f.title, ext: f.extensions, hint: FORMAT_HINTS[slug] || `Файлы ${f.extensions.join(', ')}` };
+};
+const KIND_TITLES = { builtin: 'Встроенные', preset: 'Готовые построчные', custom: 'Созданные пользователями' };
+function formatOptions(list, selected) {
+  return Object.entries(KIND_TITLES)
+    .map(([kind, title]) => {
+      const items = list.filter((f) => f.kind === kind);
+      if (!items.length) return '';
+      return `<optgroup label="${title}">${items
+        .map((f) => `<option value="${esc(f.slug)}" ${f.slug === selected ? 'selected' : ''}>${esc(f.title)} (${esc(f.extensions.join(', '))})</option>`)
+        .join('')}</optgroup>`;
+    })
+    .join('');
+}
 
 const slugify = (t) =>
   t.toLowerCase()
@@ -381,13 +405,15 @@ async function renderNewGame() {
     view.innerHTML = `<div class="empty">Чтобы добавить игру, <button class="btn primary" data-act="login">войдите через GitHub</button></div>`;
     return;
   }
+  const formats = await loadFormats(true);
   view.innerHTML = `
     <form class="panel form" data-form="new-game">
       <h1>Новая игра</h1>
       <label>Название<input name="title" required maxlength="200" placeholder="RimWorld" autocomplete="off"></label>
       <label>Адрес на сайте<input name="slug" required pattern="[a-z0-9][a-z0-9\\-]{0,62}" placeholder="rimworld" autocomplete="off">
         <small>Латиница в нижнем регистре, цифры и дефис. Потом не меняется.</small></label>
-      <label>Формат файлов<select name="format">${Object.entries(FORMATS).map(([id, f]) => `<option value="${id}">${esc(f.name)}</option>`).join('')}</select></label>
+      <label>Формат файлов<select name="format">${formatOptions(formats, 'rimworld')}</select>
+        <small>Нет нужного? <a href="#/formats">Опишите свой формат</a> — для построчных текстовых файлов это делается без программирования.</small></label>
       <div class="row2">
         <label>Язык оригинала<input name="sourceLang" value="en" required></label>
         <label>Языки перевода<input name="languages" value="ru" required placeholder="ru, uk"><small>Коды через запятую: ru, uk, be, pt-BR</small></label>
@@ -429,7 +455,8 @@ async function renderNewGame() {
 async function renderSettings(slug) {
   const data = await api(`/games/${encodeURIComponent(slug)}/manage`);
   const { game, moderators, files, strings } = data;
-  const fmt = FORMATS[game.format] || { name: game.format, ext: [], hint: '' };
+  const formats = await loadFormats(true);
+  const fmt = fmtInfo(formats, game.format);
   crumbs.innerHTML = `<a href="#/">Игры</a> / <a href="#/g/${encodeURIComponent(slug)}">${esc(game.title)}</a> / Настройки`;
   document.title = `Настройки — ${game.title} · LocalizationForum`;
   const langOptions = (withAll) =>
@@ -447,7 +474,8 @@ async function renderSettings(slug) {
             <small>Добавьте код через запятую. Если убрать язык, его переводы сохранятся, но будут скрыты.</small></label>
           <label>Репозиторий GitHub<input name="repo" value="${esc(game.repo || '')}" placeholder="owner/name"></label>
         </div>
-        <p class="muted">Адрес: <span class="mono">${esc(game.slug)}</span> · формат: ${esc(fmt.name)} · оригинал: ${esc(game.source_lang)}</p>
+        ${strings ? `<p class="muted">Формат: ${esc(fmt.name)}</p>` : `<label>Формат файлов<select name="format">${formatOptions(formats, game.format)}</select><small>Можно сменить, пока не загружены исходники. <a href="#/formats">Свои форматы</a></small></label>`}
+        <p class="muted">Адрес: <span class="mono">${esc(game.slug)}</span> · оригинал: ${esc(game.source_lang)}</p>
         <div class="actions"><button class="btn primary">Сохранить</button></div>
         <ul class="issues"></ul>
       </form>
@@ -526,7 +554,7 @@ async function renderSettings(slug) {
   onSubmit('settings', async (f) => {
     await api(`/games/${encodeURIComponent(slug)}/settings`, {
       method: 'POST',
-      body: { title: f.title.value, languages: parseLangs(f.languages.value), repo: f.repo.value },
+      body: { title: f.title.value, languages: parseLangs(f.languages.value), repo: f.repo.value, format: f.format?.value },
     });
     toast('Сохранено');
     renderSettings(slug);
@@ -614,7 +642,8 @@ document.addEventListener('change', (e) => {
   if (!input.matches?.('.picker input[type=file]')) return;
   const form = input.closest('form');
   const n = [...form.querySelectorAll('.picker input[type=file]')].reduce((s, i) => s + i.files.length, 0);
-  form.querySelector('.picked').textContent = n ? `выбрано файлов: ${n}` : 'ничего не выбрано';
+  const label = form.querySelector('.picked');
+  if (label) label.textContent = n ? `выбрано файлов: ${n}` : 'ничего не выбрано';
 });
 
 async function collectFiles(form, fmt) {
@@ -733,3 +762,139 @@ document.addEventListener('click', async (e) => {
     el.disabled = false;
   }
 });
+
+// ---------- форматы файлов: список и редактор ----------
+
+const CONFIG_HELP = `
+  <details class="help"><summary>Как описать формат</summary>
+  <p>Построчный формат описывается JSON-объектом. Файл перевода собирается поверх оригинала: меняется только найденный текст, всё остальное остаётся байт в байт.</p>
+  <ul>
+    <li><b>extensions</b> — расширения файлов: <code>[".gpc"]</code></li>
+    <li><b>mode</b> — <code>"lines"</code>: ключ строки = её номер в файле; <code>"keyValue"</code>: ключ берётся из группы <code>(?&lt;key&gt;…)</code></li>
+    <li><b>text</b> — регулярное выражение для строки, переводимая часть — группа <code>(?&lt;text&gt;…)</code>. По умолчанию: вся непустая строка (lines) или <code>key=value</code> (keyValue)</li>
+    <li><b>skip</b> — список выражений для строк, которые никогда не переводятся (пустые, номера…)</li>
+    <li><b>contextLine</b> — строка-заголовок с группой <code>(?&lt;label&gt;…)</code>: не переводится и показывается переводчикам как контекст следующих строк (имя говорящего, секция)</li>
+    <li><b>comment</b> — выражение для строк-комментариев</li>
+  </ul>
+  <p>Проверьте формат на настоящем файле: должно быть «собирается обратно без изменений».</p>
+  </details>`;
+
+async function renderFormats(slug, q) {
+  const formats = await loadFormats(true);
+  crumbs.innerHTML = `<a href="#/">Игры</a> / <a href="#/formats">Форматы</a>${slug ? ' / ' + esc(slug) : ''}`;
+  document.title = 'Форматы файлов · LocalizationForum';
+  if (!slug) {
+    view.innerHTML = `
+      <div class="page-head"><h1>Форматы файлов</h1>${me ? `<a class="btn primary" href="#/formats/new">+ Свой формат</a>` : ''}</div>
+      <p class="muted">Встроенные форматы разбирают сложные файлы (XML RimWorld, JSON). Построчные описываются данными — их может создать любой участник.</p>
+      <div class="formats">${formats
+        .map(
+          (f) => `<a class="card fmt" href="#/formats/${encodeURIComponent(f.slug)}">
+            <b>${esc(f.title)}</b>
+            <span class="muted mono">${esc(f.slug)} · ${esc(f.extensions.join(', '))}</span>
+            <span class="badge-kind ${f.kind}">${KIND_TITLES[f.kind]}${f.owner ? ' · ' + esc(f.owner) : ''}</span>
+          </a>`,
+        )
+        .join('')}</div>`;
+    return;
+  }
+
+  const isNew = slug === 'new';
+  const base = isNew ? formats.find((f) => f.slug === (q.get('from') || 'plain-lines')) : formats.find((f) => f.slug === slug);
+  if (!isNew && !base) throw new Error('Формат не найден');
+  const editable = isNew || (base.kind === 'custom' && me && (me.is_admin || base.owner === me.login));
+  const lineBased = isNew || base.kind !== 'builtin';
+  const config = base?.config ?? { extensions: ['.txt'], mode: 'lines', skip: ['^\\s*$'] };
+
+  view.innerHTML = `
+    <form class="panel form" data-form="format">
+      <div class="page-head"><h1>${isNew ? 'Новый формат' : esc(base.title)}</h1>
+        ${!isNew && lineBased && me ? `<a class="btn" href="#/formats/new?from=${encodeURIComponent(base.slug)}">Создать копию</a>` : ''}</div>
+      ${!isNew ? `<p class="muted">${KIND_TITLES[base.kind]} · <span class="mono">${esc(base.slug)}</span>${base.owner ? ' · автор ' + esc(base.owner) : ''}</p>` : ''}
+      ${!lineBased ? `<p>Это встроенный формат: он написан кодом и не редактируется. Расширения: ${esc(base.extensions.join(', '))}.</p>` : ''}
+      ${isNew ? `
+        <div class="row2">
+          <label>Код<input name="slug" required pattern="[a-z0-9][a-z0-9\\-]{1,40}" placeholder="my-game-dialogs" autocomplete="off"><small>Латиница, цифры, дефис</small></label>
+          <label>Название<input name="title" required maxlength="120" placeholder="Диалоги My Game (.dlg)"></label>
+        </div>
+        <label>На основе<select name="from">${formats
+          .filter((f) => f.kind !== 'builtin')
+          .map((f) => `<option value="${esc(f.slug)}" ${f.slug === base?.slug ? 'selected' : ''}>${esc(f.title)}</option>`)
+          .join('')}</select></label>` : editable ? `<label>Название<input name="title" value="${esc(base.title)}" maxlength="120"></label>` : ''}
+      ${lineBased ? `
+        <label>Описание формата (JSON)<textarea name="config" class="mono" rows="10" spellcheck="false" ${editable ? '' : 'readonly'}>${esc(JSON.stringify(config, null, 2))}</textarea></label>
+        ${CONFIG_HELP}` : ''}
+      <h2>Проверка на файле</h2>
+      <div class="picker"><label class="btn small">Выбрать файл<input type="file" name="sample" hidden></label><span class="muted picked-sample">файл не выбран</span></div>
+      <div class="preview"></div>
+      ${editable ? `<div class="actions"><button class="btn primary">${isNew ? 'Создать формат' : 'Сохранить'}</button></div>` : ''}
+      <ul class="issues"></ul>
+    </form>`;
+
+  const form = view.querySelector('form');
+  const report = (items) => (form.querySelector('.issues').innerHTML = items.map(([l, m]) => `<li class="${l}">${esc(m)}</li>`).join(''));
+  const readConfig = () => {
+    try {
+      return JSON.parse(form.config.value);
+    } catch (e) {
+      throw new Error('Описание — не JSON: ' + e.message);
+    }
+  };
+  form.from?.addEventListener('change', () => {
+    const f = formats.find((x) => x.slug === form.from.value);
+    if (f?.config) form.config.value = JSON.stringify(f.config, null, 2);
+    runPreview();
+  });
+
+  let sample = null;
+  async function runPreview() {
+    const box = form.querySelector('.preview');
+    if (!sample) return;
+    if (!me) return (box.innerHTML = `<p class="muted">Войдите, чтобы проверить файл.</p>`);
+    try {
+      const body = { path: sample.name, content: sample.content, ...(lineBased ? { config: readConfig() } : { format: base.slug }) };
+      const r = await api('/formats/preview', { method: 'POST', body });
+      box.innerHTML = `
+        <ul class="issues">
+          <li class="${r.matches ? 'ok' : 'warn'}">${r.matches ? 'Расширение файла подходит' : 'Расширение файла не входит в extensions — при загрузке такой файл будет пропущен'}</li>
+          <li class="${r.count ? 'ok' : 'warn'}">Найдено строк для перевода: ${r.count}</li>
+          ${r.roundTrip === null ? '' : `<li class="${r.roundTrip ? 'ok' : 'error'}">${r.roundTrip ? 'Файл собирается обратно без изменений' : 'Файл НЕ собирается обратно байт в байт — проверьте выражения'}</li>`}
+        </ul>
+        ${r.count ? `<table class="ptable"><thead><tr><th>Ключ</th><th>Контекст</th><th>Текст</th></tr></thead><tbody>${r.strings
+          .slice(0, 60)
+          .map((x) => `<tr><td class="mono">${esc(x.key)}</td><td class="muted">${esc(x.context || '')}</td><td>${esc(x.source)}</td></tr>`)
+          .join('')}</tbody></table>${r.count > 60 ? `<p class="muted">…и ещё ${r.count - 60}</p>` : ''}` : ''}`;
+    } catch (e) {
+      box.innerHTML = `<ul class="issues"><li class="error">${esc(e.message)}</li></ul>`;
+    }
+  }
+  form.sample.addEventListener('change', async () => {
+    const file = form.sample.files[0];
+    if (!file) return;
+    sample = { name: file.name, content: await file.text() };
+    form.querySelector('.picked-sample').textContent = file.name;
+    runPreview();
+  });
+  let t;
+  form.config?.addEventListener('input', () => {
+    clearTimeout(t);
+    t = setTimeout(runPreview, 600);
+  });
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+      const config = readConfig();
+      if (isNew) {
+        await api('/formats', { method: 'POST', body: { slug: form.slug.value.trim(), title: form.title.value, config } });
+        toast('Формат создан');
+        location.hash = `#/formats/${encodeURIComponent(form.slug.value.trim())}`;
+      } else {
+        const r = await api(`/formats/${encodeURIComponent(base.slug)}`, { method: 'POST', body: { title: form.title?.value, config } });
+        report([['ok', 'Сохранено'], ...(r.games.length ? [['warn', `Формат используют игры: ${r.games.join(', ')}. Чтобы строки пересчитались, загрузите исходники заново.`]] : [])]);
+      }
+    } catch (err) {
+      report([['error', err.message]]);
+    }
+  });
+}
