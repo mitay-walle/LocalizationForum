@@ -315,7 +315,7 @@ function renderString(s) {
     .join('');
   return `<article class="str" data-string="${s.id}">
     <div class="str-src">
-      <div class="str-head"><span class="mono">${esc(s.key)}</span>${s.context ? `<span class="context">${esc(s.context)}</span>` : ''}${state.params.file ? '' : `<span class="mono file">${esc(s.file)}</span>`}</div>
+      <div class="str-head"><span class="mono" title="${esc(s.file)}">${esc(s.key)}</span>${s.context ? `<span class="context">${esc(s.context)}</span>` : ''}</div>
       <div class="source">${esc(s.source)}</div>
     </div>
     <div class="str-tr">
