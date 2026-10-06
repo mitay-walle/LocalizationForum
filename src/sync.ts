@@ -177,37 +177,24 @@ export async function exportLanguage(game: Game, lang: string) {
     byFile.get(r.file)!.push(r);
   }
 
+  // Выгружаются ВСЕ файлы и ВСЕ строки: где перевода нет, остаётся текст оригинала.
+  // Иначе игра получит неполные файлы (пропавшие строки, обрезанные списки, отсутствующие скрипты).
   const files: InFile[] = [];
   let translated = 0;
   for (const [file, list] of byFile) {
-    // Список (Key[0], Key[1]…) выгружается целиком: непереведённые элементы — оригиналом,
-    // иначе игра получит обрезанный список.
-    const listHasTranslation = new Set<string>();
-    for (const r of list) {
-      const m = r.key.match(/^(.*)\[\d+\]$/);
-      if (m && r.text !== null) listHasTranslation.add(m[1]);
-    }
-    const out: OutString[] = [];
+    translated += list.filter((r) => r.text !== null).length;
+    const all: OutString[] = list.map((r) => ({ key: r.key, source: r.source, text: r.text ?? r.source }));
     if (format.skeleton) {
-      // Файл собирается поверх оригинала: отдаём все строки, непереведённые — текстом оригинала.
+      // Файл собирается поверх оригинала байт в байт
       const original = originals.get(file);
-      const done = list.filter((r) => r.text !== null).length;
-      if (!done || original === undefined) continue;
-      translated += done;
-      const all = list.map((r) => ({ key: r.key, source: r.source, text: r.text ?? r.source }));
+      if (original === undefined) continue;
       files.push({ path: file, content: format.serialize(file, all, original) });
-      continue;
+    } else {
+      files.push({ path: file, content: format.serialize(file, all) });
     }
-    for (const r of list) {
-      const m = r.key.match(/^(.*)\[\d+\]$/);
-      if (r.text !== null) {
-        translated++;
-        out.push({ key: r.key, source: r.source, text: r.text });
-      } else if (m && listHasTranslation.has(m[1])) {
-        out.push({ key: r.key, source: r.source, text: r.source });
-      }
-    }
-    if (out.length) files.push({ path: file, content: format.serialize(file, out) });
   }
+  // Оригиналы, в которых нет ни одной переводимой строки, тоже кладём — чтобы набор файлов был полным
+  for (const [path, content] of originals) if (!byFile.has(path)) files.push({ path, content });
+  files.sort((a, b) => a.path.localeCompare(b.path));
   return { files, translated, total: rows.length };
 }

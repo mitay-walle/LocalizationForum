@@ -88,7 +88,8 @@ export async function publishGame(game: Game, token: string, opts: { version?: s
   const exports = new Map<string, { path: string; content: string }[]>();
   for (const lang of game.languages) {
     const ex = await exportLanguage(game, lang);
-    exports.set(lang, ex.files);
+    // Языки без единого утверждённого перевода в репо кладём (полные файлы с оригиналом), но релиз не выпускаем
+    exports.set(lang, ex.translated ? ex.files : []);
     for (const f of ex.files) files.push({ path: `${lang}/${f.path}`, content: f.content });
   }
   files.push({
