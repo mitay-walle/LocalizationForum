@@ -92,8 +92,8 @@ describe.skipIf(!url)('api', async () => {
     const ok2 = await call('POST', `/strings/${starving.id}/variants`, { token: bob, body: { lang: 'ru', text: '{PAWN_nameDef} умирает от голода' } });
     expect((await call('POST', `/strings/${starving.id}/variants`, { token: bob, body: { lang: 'ru', text: '{PAWN_nameDef} умирает от голода' } })).status).toBe(422);
 
-    expect((await call('POST', `/variants/${ok2.json.id}/vote`, { token: alice })).json).toEqual({ votes: 1, mine: true });
-    expect((await call('POST', `/variants/${ok2.json.id}/vote`, { token: alice })).json).toEqual({ votes: 1, mine: true });
+    expect((await call('POST', `/variants/${ok2.json.id}/vote`, { token: alice })).json).toEqual({ votes: 1, mine: true, cleared: [] });
+    expect((await call('POST', `/variants/${ok2.json.id}/vote`, { token: alice })).json).toEqual({ votes: 1, mine: true, cleared: [] });
     expect((await call('POST', `/variants/${ok2.json.id}/vote`, { token: bob })).json.votes).toBe(2);
     expect((await call('DELETE', `/variants/${ok2.json.id}/vote`, { token: bob })).json).toEqual({ votes: 1, mine: false });
 
@@ -105,6 +105,34 @@ describe.skipIf(!url)('api', async () => {
       ['alice', 0, false],
     ]);
     expect((await call('DELETE', `/variants/${ok.json.id}`, { token: bob })).status).toBe(403);
+  });
+
+  it('one vote per string+lang: voting for another variant moves the vote', async () => {
+    const s = strings.find((x) => x.key === 'BreakRiskMinor') ?? strings.find((x) => x.key !== 'Starving');
+    const text = s.source; // оригинал проходит проверку плейсхолдеров
+    const a = await call('POST', `/strings/${s.id}/variants`, { token: alice, body: { lang: 'ru', text } });
+    const b = await call('POST', `/strings/${s.id}/variants`, { token: alice, body: { lang: 'ru', text: text + ' (B)' } });
+    expect([a.status, b.status]).toEqual([201, 201]);
+    expect((await call('POST', `/variants/${a.json.id}/vote`, { token: bob })).json).toEqual({ votes: 1, mine: true, cleared: [] });
+    expect((await call('POST', `/variants/${a.json.id}/vote`, { token: alice })).json).toEqual({ votes: 2, mine: true, cleared: [] });
+    // bob переголосовывает за B — голос с A снимается, голос alice за A остаётся
+    expect((await call('POST', `/variants/${b.json.id}/vote`, { token: bob })).json).toEqual({ votes: 1, mine: true, cleared: [a.json.id] });
+    const votesOf = async (token: string) =>
+      Object.fromEntries((await call('GET', `/games/rw/strings?lang=ru&q=${encodeURIComponent(s.key)}`, { token })).json.strings.find((x: any) => x.id === s.id).variants.map((v: any) => [v.id, [v.votes, v.mine]]));
+    expect(await votesOf(bob)).toEqual({ [a.json.id]: [1, false], [b.json.id]: [1, true] });
+    // голос за вариант другой строки не трогает голоса этой строки
+    const starving = strings.find((x) => x.key === 'Starving');
+    const other = (await call('GET', `/games/rw/strings?lang=ru&q=Starving`, { token: bob })).json.strings.find((x: any) => x.id === starving.id).variants[0];
+    expect((await call('POST', `/variants/${other.id}/vote`, { token: bob })).json.cleared).toEqual([]);
+    expect(await votesOf(bob)).toEqual({ [a.json.id]: [1, false], [b.json.id]: [1, true] });
+    // отмена (как в интерфейсе): снять новый голос и вернуть прежний
+    await call('DELETE', `/variants/${b.json.id}/vote`, { token: bob });
+    expect((await call('POST', `/variants/${a.json.id}/vote`, { token: bob })).json).toEqual({ votes: 2, mine: true, cleared: [] });
+    expect(await votesOf(bob)).toEqual({ [a.json.id]: [2, true], [b.json.id]: [0, false] });
+    // убрать за собой, чтобы не влиять на следующие тесты (статистика voting)
+    await call('DELETE', `/variants/${other.id}/vote`, { token: bob });
+    await call('DELETE', `/variants/${a.json.id}`, { token: alice });
+    await call('DELETE', `/variants/${b.json.id}`, { token: alice });
   });
 
   it('moderation, export, credits', async () => {

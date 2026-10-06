@@ -98,6 +98,23 @@ describe.skipIf(!url)('publish to github', async () => {
     const files = repo.trees[repo.commits[repo.commit].tree];
     expect(Object.keys(files).sort()).toEqual(['README.md', 'game.json', 'source/Scripts/Intro.gpc']);
     expect(JSON.parse(files['game.json'])).toMatchObject({ slug: 'gp', format: 'gunpoint', languages: ['ru'] });
+    // README для игроков: качать Release, а не исходники; раздел на языке перевода + английский
+    const md: string = files['README.md'];
+    expect(md).toContain('## Русский');
+    expect(md).toContain('## English');
+    expect(md).toContain('/releases?q=ru-');
+    expect(md).toContain('`gp-ru-<version>.zip`');
+    expect(md).toContain('http://site.test/#/g/gp/ru');
+    expect(md).toContain('`source/`');
+  });
+
+  it('README is regenerated on every publish (overwrites an outdated one)', async () => {
+    const repo = repos.get('mitay-walle/localization_gunpoint_ru');
+    const head = repo.commits[repo.commit].tree;
+    repo.trees[head] = { ...repo.trees[head], 'README.md': 'old hand-made readme' };
+    const r = await publishGame(await game(), 'tok', { site: 'http://site.test/' });
+    expect(r.commit).not.toBeNull();
+    expect(repo.trees[repo.commits[repo.commit].tree]['README.md']).toContain('## Русский');
   });
 
   it('second publish with no changes makes no commit; with translation + version makes commit and release with zip', async () => {
@@ -115,7 +132,7 @@ describe.skipIf(!url)('publish to github', async () => {
     const repo = repos.get('mitay-walle/localization_gunpoint_ru');
     const files = repo.trees[repo.commits[repo.commit].tree];
     expect(files['ru/Scripts/Intro.gpc']).toContain('Ты кто?');
-    expect(files['README.md']).toBeDefined(); // README из первой публикации остался
+    expect(files['README.md']).toContain('https://github.com/mitay-walle/localization_gunpoint_ru/releases/latest');
     expect(repo.releases[0].assets[0]).toMatchObject({ name: 'gp-ru-1.0.zip', head: 'PK' });
 
     await expect(publishGame(await game(), 'tok', { site: 'http://site.test/', version: '1.0' })).rejects.toThrow(/уже существует/);

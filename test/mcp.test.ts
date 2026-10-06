@@ -99,7 +99,7 @@ describe.skipIf(!url)('mcp + oauth', async () => {
     const site = await json(await req('/api/games/g/strings?lang=ru&filter=voting', { headers: { Authorization: `Bearer ${boss}` } }));
     expect(site.body.strings[0].variants[0]).toMatchObject({ text: 'Привет, {0}', author: 'ann', ai: true });
 
-    expect((await callTool(apiToken, 'vote', { variant_id: vid })).data).toEqual({ votes: 1, mine: true });
+    expect((await callTool(apiToken, 'vote', { variant_id: vid })).data).toEqual({ votes: 1, mine: true, cleared: [] });
     const denied = await callTool(apiToken, 'approve_translation', { string_id: hello.id, lang: 'ru', variant_id: vid });
     expect(denied.isError).toBe(true);
     expect(denied.data).toContain('модератор');
