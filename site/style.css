@@ -308,3 +308,71 @@ input:focus, select:focus, textarea:focus { background: var(--panel); box-shadow
 .stage-banner.ban .muted { color: inherit; opacity: 0.8; }
 .limit-hint { margin: 8px 0 0; padding: 8px 12px; background: var(--warn-soft); color: var(--warn); font-size: 0.87rem; }
 .vmeta .link { font-size: inherit; }
+
+/* --- карточка игры на главной: вся кликабельна (растянутая ссылка заголовка), ссылки внутри — поверх --- */
+.game-card { position: relative; cursor: pointer; }
+.game-card .card-link { color: var(--ink); }
+.game-card .card-link:hover { text-decoration: none; }
+.game-card .card-link::after { content: ''; position: absolute; inset: 0; z-index: 0; }
+.game-card .card-link:focus-visible { outline: none; }
+.game-card:focus-within { box-shadow: var(--shadow-lift), 0 0 0 2px var(--accent); }
+.game-card a:not(.card-link) { position: relative; z-index: 1; }
+.game-card .cover { display: block; width: calc(100% + 44px); max-width: none; margin: -20px -22px 14px; aspect-ratio: 460 / 215; object-fit: cover; background: var(--field); }
+.card-desc { margin: 6px 0 0; color: var(--muted); font-size: 0.93rem; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+
+/* --- обзор игры --- */
+.game-hero { display: grid; grid-template-columns: minmax(0, 460px) minmax(0, 1fr); padding: 0; margin-bottom: 24px; overflow: hidden; }
+.game-hero:not(:has(.hero-cover)) { grid-template-columns: minmax(0, 1fr); }
+.hero-cover { display: block; width: 100%; height: 100%; min-height: 100%; aspect-ratio: 460 / 215; object-fit: cover; background: var(--field); }
+.hero-body { padding: 22px 24px; display: grid; gap: 10px; align-content: start; min-width: 0; }
+.hero-body h1, .hero-body p { margin: 0; overflow-wrap: anywhere; }
+.hero-desc { white-space: pre-line; }
+.ov-langs { margin-bottom: 24px; }
+.ov-lang { display: grid; grid-template-columns: minmax(140px, 1.2fr) minmax(120px, 1fr) auto auto auto; gap: 8px 16px; align-items: center; padding: 10px 0; }
+.ov-lang + .ov-lang { box-shadow: 0 -1px 0 var(--sep); }
+.ov-name { color: var(--ink); min-width: 0; overflow-wrap: anywhere; }
+.ov-progress { display: grid; grid-template-columns: 1fr 44px; gap: 8px; align-items: center; }
+.ov-count { font-variant-numeric: tabular-nums; white-space: nowrap; font-size: 0.93rem; }
+.ov-actions { display: flex; gap: 8px; align-items: center; justify-content: flex-end; flex-wrap: wrap; }
+.ov-actions .link { font-size: 1.15rem; padding: 0 4px; }
+.ov-confirm { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; background: var(--bad-soft); color: var(--bad); padding: 8px 12px; }
+.ov-confirm[hidden] { display: none; }
+.ov-addlang { margin-top: 16px; display: grid; gap: 6px; max-width: 640px; }
+.ov-credits { margin: 0; padding-left: 18px; display: grid; gap: 4px; }
+
+/* --- выбор языков: чипы + добавление --- */
+.field { display: grid; gap: 5px; font-weight: 500; min-width: 0; align-content: start; }
+.field small { font-weight: 400; color: var(--muted); }
+.field-label { font-weight: 500; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; font-weight: 400; }
+.chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 2px 3px 10px; background: var(--accent-soft); }
+.chip .mono { color: var(--muted); }
+.chip button { border: 0; background: none; cursor: pointer; color: var(--muted); font-size: 1.05rem; line-height: 1; padding: 2px 8px; }
+.chip button:hover { color: var(--bad); }
+.lp-add { display: flex; flex-wrap: wrap; gap: 6px; font-weight: 400; }
+.lp-add select { flex: 2 1 170px; min-width: 0; }
+.lp-add input { flex: 1 1 100px; min-width: 0; }
+.lp-err { color: var(--bad); font-weight: 400; }
+.lp-err:empty { display: none; }
+
+/* --- шапка и заголовки страниц не вылезают за экран на узких окнах --- */
+.top { flex-wrap: wrap; row-gap: 8px; }
+.account { flex-wrap: wrap; justify-content: flex-end; min-width: 0; margin-left: auto; row-gap: 6px; }
+.page-head > * { min-width: 0; }
+.page-head h1 { overflow-wrap: anywhere; }
+.view, .settings, .form { min-width: 0; }
+@media (max-width: 760px) {
+  .game-hero { grid-template-columns: minmax(0, 1fr); }
+  .ov-lang { grid-template-columns: minmax(0, 1fr) auto; }
+  .ov-progress, .ov-actions { grid-column: 1 / -1; }
+  .ov-actions { justify-content: flex-start; }
+}
+@media (max-width: 760px) {
+  /* 1fr = minmax(auto, 1fr): без minmax(0, …) колонка растягивалась по самому широкому содержимому */
+  .layout { grid-template-columns: minmax(0, 1fr); }
+  .layout > * { min-width: 0; }
+  .side-sort { flex-wrap: wrap; }
+  .side-sort button { min-width: 0; }
+}
+.stage-banner > * { min-width: 0; }
+.stage-banner .seg { flex-wrap: wrap; max-width: 100%; }

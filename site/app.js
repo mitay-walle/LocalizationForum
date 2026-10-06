@@ -26,8 +26,38 @@ let me = null;
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const pct = (a, b) => (b ? Math.floor((a / b) * 100) : 0);
 // Названия языков перевода игр (не языка интерфейса) — всегда самоназвания
-const LANG_NAMES = { ru: 'Русский', uk: 'Українська', be: 'Беларуская', kk: 'Қазақша', en: 'English', de: 'Deutsch', fr: 'Français', es: 'Español', pl: 'Polski' };
-const langName = (l) => LANG_NAMES[l] || l;
+// Частые языки перевода — для выбора в списке (порядок = порядок в списке)
+const LANG_NAMES = {
+  ru: 'Русский', en: 'English', uk: 'Українська', be: 'Беларуская', kk: 'Қазақша', de: 'Deutsch', fr: 'Français',
+  es: 'Español', 'es-419': 'Español (Latinoamérica)', 'pt-BR': 'Português (Brasil)', 'pt-PT': 'Português (Portugal)',
+  it: 'Italiano', pl: 'Polski', cs: 'Čeština', sk: 'Slovenčina', tr: 'Türkçe', nl: 'Nederlands', sv: 'Svenska', da: 'Dansk',
+  no: 'Norsk', fi: 'Suomi', hu: 'Magyar', ro: 'Română', bg: 'Български', sr: 'Српски', hr: 'Hrvatski', el: 'Ελληνικά',
+  lt: 'Lietuvių', lv: 'Latviešu', et: 'Eesti', ka: 'ქართული', hy: 'Հայերեն', az: 'Azərbaycan', uz: 'Oʻzbek',
+  'zh-Hans': '简体中文', 'zh-Hant': '繁體中文', ja: '日本語', ko: '한국어', vi: 'Tiếng Việt', th: 'ไทย', id: 'Bahasa Indonesia',
+  ar: 'العربية', he: 'עברית', fa: 'فارسی', hi: 'हिन्दी',
+};
+// Остальные коды — самоназванием из браузера (Intl.DisplayNames), иначе сам код
+const langName = (l) => {
+  if (LANG_NAMES[l]) return LANG_NAMES[l];
+  try {
+    const n = new Intl.DisplayNames([l], { type: 'language' }).of(l);
+    return n && n !== l ? n.charAt(0).toLocaleUpperCase(l) + n.slice(1) : l;
+  } catch {
+    return l;
+  }
+};
+const LANG_CODE_RE = /^[a-z]{2,3}(-[A-Za-z0-9]{2,8})?$/;
+/** Обложка: своя картинка или шапка из Steam (домен akamai — cloudflare-CDN Steam недоступен в части стран) */
+const coverOf = (g) => {
+  if (g.cover_url) return g.cover_url;
+  const steam = (g.links || []).find((l) => l.kind === 'steam');
+  const m = steam?.url.match(/store\.steampowered\.com\/app\/(\d+)/);
+  return m ? `https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/${m[1]}/header.jpg` : null;
+};
+const coverImg = (g, cls = 'cover') => {
+  const src = coverOf(g);
+  return src ? `<img class="${cls}" src="${esc(src)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">` : '';
+};
 const SITE = 'LocalizationForum';
 const docTitle = (...parts) => (document.title = [...parts.filter(Boolean), SITE].join(' · '));
 
@@ -195,6 +225,7 @@ async function route() {
     else if (parts[0] === 'formats') await renderFormats(parts[1], q);
     else if (parts[0] === 'tokens') await renderTokens();
     else if (parts[0] === 'g' && parts[1] && parts[2] === 'settings') await renderSettings(parts[1], q);
+    else if (parts[0] === 'g' && parts[1] && !parts[2]) await renderOverview(parts[1]);
     else if (parts[0] === 'g' && parts[1]) await renderGame(parts[1], parts[2], q);
     else await renderHome();
   } catch (e) {
@@ -217,8 +248,10 @@ async function renderHome() {
   view.innerHTML = head + `<div class="games">${games
     .map(
       (g) => `
-      <section class="card">
-        <h2>${esc(g.title)}</h2>
+      <section class="card game-card">
+        ${coverImg(g)}
+        <h2><a class="card-link" href="#/g/${encodeURIComponent(g.slug)}">${esc(g.title)}</a></h2>
+        ${g.description ? `<p class="card-desc">${esc(g.description)}</p>` : ''}
         <div class="muted">${t('home.strings', { n: g.total })} · ${esc(g.format)}${g.repo ? ` · <a href="https://github.com/${esc(g.repo)}" target="_blank" rel="noopener">${esc(g.repo)}</a>` : ''}</div>
         <div class="langs">${g.languages
           .map((l) => {
@@ -249,7 +282,7 @@ let state = null; // { slug, lang, game, data, params }
 async function renderGame(slug, lang, q) {
   const { game, stats, canManage, status, moderates, ban } = await api(`/games/${encodeURIComponent(slug)}`);
   if (!lang || !game.languages.includes(lang)) {
-    location.replace(href(slug, game.languages[0]));
+    location.replace(`#/g/${encodeURIComponent(slug)}`);
     return;
   }
   const params = { file: q.get('file') || '', filter: q.get('filter') || 'all', q: q.get('q') || '', page: Number(q.get('page') || 1) };
@@ -271,7 +304,7 @@ async function renderGame(slug, lang, q) {
   state.st = st;
 
   docTitle(`${game.title} — ${langName(lang)}`);
-  crumbs.innerHTML = `${gamesCrumb()} / ${esc(game.title)} / ${esc(langName(lang))}`;
+  crumbs.innerHTML = `${gamesCrumb()} / <a href="#/g/${encodeURIComponent(slug)}">${esc(game.title)}</a> / ${esc(langName(lang))}`;
 
   const settingsHref = `#/g/${encodeURIComponent(slug)}/settings`;
   const pages = Math.max(1, Math.ceil(data.total / data.pageSize));
@@ -644,7 +677,12 @@ async function renderNewGame() {
         <small>${t('new.formatHint')}</small></label>
       <div class="row2">
         <label>${t('new.sourceLang')}<input name="sourceLang" value="en" required></label>
-        <label>${t('new.languages')}<input name="languages" value="ru" required placeholder="ru, uk"><small>${t('new.languagesHint')}</small></label>
+        <div class="field"><span class="field-label">${t('new.languages')}</span>${langPicker('languages', ['ru'])}<small>${t('new.languagesHint')}</small></div>
+      </div>
+      <label>${t('info.description')} <span class="muted">(${t('info.optional')})</span><textarea name="description" rows="3" maxlength="5000" placeholder="${esc(t('info.descriptionPh'))}"></textarea></label>
+      <div class="row2">
+        <label>${t('info.steam')} <span class="muted">(${t('info.optional')})</span><input name="link_steam" type="url" placeholder="https://store.steampowered.com/app/…"></label>
+        <label>${t('info.site')} <span class="muted">(${t('info.optional')})</span><input name="link_site" type="url" placeholder="https://…"></label>
       </div>
       <label>${t('new.repo')}<input name="repo" placeholder="owner/name">
         <small>${t('new.repoHint')}</small></label>
@@ -670,6 +708,8 @@ async function renderNewGame() {
           sourceLang: f.sourceLang.value.trim(),
           languages: parseLangs(f.languages.value),
           repo: f.repo.value,
+          description: f.description.value,
+          links: linksFromForm(form),
         },
       });
       toast(t('new.created'));
@@ -699,12 +739,23 @@ async function renderSettings(slug, q = new URLSearchParams()) {
         <h2>${t('set.main')}</h2>
         <label>${t('new.name')}<input name="title" value="${esc(game.title)}" required maxlength="200"></label>
         <div class="row2">
-          <label>${t('new.languages')}<input name="languages" value="${esc(game.languages.join(', '))}" required>
-            <small>${t('set.languagesHint')}</small></label>
+          <div class="field"><span class="field-label">${t('new.languages')}</span>${langPicker('languages', game.languages, game.source_lang)}
+            <small>${t('set.languagesHint')}</small></div>
           <label>${t('set.repo')}<input name="repo" value="${esc(game.repo || '')}" placeholder="owner/name"></label>
         </div>
         ${strings ? `<p class="muted">${t('set.formatIs', { name: esc(fmt.name) })}</p>` : `<label>${t('new.format')}<select name="format">${formatOptions(formats, game.format)}</select><small>${t('set.formatHint')}</small></label>`}
         <p class="muted">${t('set.address', { slug: `<span class="mono">${esc(game.slug)}</span>`, lang: esc(game.source_lang) })}</p>
+        <div class="actions"><button class="btn primary">${t('common.save')}</button></div>
+        <ul class="issues"></ul>
+      </form>
+
+      <form class="panel form" data-form="info">
+        <h2>${t('info.title')}</h2>
+        <label>${t('info.description')}<textarea name="description" rows="4" maxlength="5000" placeholder="${esc(t('info.descriptionPh'))}">${esc(game.description || '')}</textarea></label>
+        <div class="row2">
+          ${LINK_KINDS.map((k) => `<label>${t('info.' + k)}<input name="link_${k}" type="url" value="${esc((game.links || []).find((l) => l.kind === k)?.url || '')}" placeholder="https://…"></label>`).join('')}
+        </div>
+        <label>${t('info.cover')}<input name="cover_url" type="url" value="${esc(game.cover_url || '')}" placeholder="https://…/header.jpg"><small>${t('info.coverHint')}</small></label>
         <div class="actions"><button class="btn primary">${t('common.save')}</button></div>
         <ul class="issues"></ul>
       </form>
@@ -823,11 +874,28 @@ async function renderSettings(slug, q = new URLSearchParams()) {
     }
   });
 
-  onSubmit('settings', async (f) => {
+  onSubmit('info', async (f) => {
     await api(`/games/${encodeURIComponent(slug)}/settings`, {
       method: 'POST',
-      body: { title: f.title.value, languages: parseLangs(f.languages.value), repo: f.repo.value, format: f.format?.value },
+      body: { description: f.description.value, cover_url: f.cover_url.value, links: linksFromForm(f) },
     });
+    report(f, [['ok', t('common.saved')]]);
+  });
+
+  onSubmit('settings', async (f) => {
+    // Убрать язык с утверждёнными переводами сервер разрешает только с force — второе нажатие «Сохранить» подтверждает
+    try {
+      await api(`/games/${encodeURIComponent(slug)}/settings`, {
+        method: 'POST',
+        body: { title: f.title.value, languages: parseLangs(f.languages.value), repo: f.repo.value, format: f.format?.value, force: f.dataset.force === '1' },
+      });
+    } catch (err) {
+      if (err.status === 422 && f.dataset.force !== '1' && game.languages.some((l) => !parseLangs(f.languages.value).includes(l))) {
+        f.dataset.force = '1';
+        throw new Error(`${err.message} ${t('set.forceHint')}`);
+      }
+      throw err;
+    }
     toast(t('common.saved'));
     renderSettings(slug);
   });
@@ -1344,4 +1412,235 @@ document.addEventListener('click', (e) => {
   uiPrefs.fileSort = cur.key === b.dataset.k ? { key: cur.key, dir: cur.dir === 'asc' ? 'desc' : 'asc' } : { key: b.dataset.k, dir: b.dataset.k === 'name' ? 'asc' : 'desc' };
   applyUi();
   document.querySelector('.side').innerHTML = renderSide(state.files, state.st);
+});
+
+// ======================================================================
+// Об игре: ссылки, выбор языков, страница-обзор игры
+// ======================================================================
+
+const LINK_KINDS = ['steam', 'site', 'gog', 'itch', 'other'];
+
+/** Ссылки из полей link_<вид> формы → [{kind, url}] для API. */
+function linksFromForm(form) {
+  return LINK_KINDS.map((kind) => ({ kind, url: form.elements[`link_${kind}`]?.value.trim() || '' })).filter((l) => l.url);
+}
+
+/** Проверить код нового языка; возвращает текст ошибки или ''. */
+function langCodeError(code, current, sourceLang) {
+  if (!LANG_CODE_RE.test(code)) return t('lp.badCode');
+  if (code === sourceLang) return t('lp.isSource');
+  if (current.includes(code)) return t('lp.already');
+  return '';
+}
+
+/** Варианты для «добавить язык»: частые языки, кроме уже выбранных и языка оригинала. */
+const langAddOptions = (current, sourceLang) =>
+  `<option value="">${t('lp.pick')}</option>` +
+  Object.keys(LANG_NAMES)
+    .filter((c) => !current.includes(c) && c !== sourceLang)
+    .map((c) => `<option value="${esc(c)}">${esc(LANG_NAMES[c])} — ${esc(c)}</option>`)
+    .join('');
+
+const langAddBox = (current, sourceLang, attr) => `
+  <div class="lp-add" ${attr}>
+    <select data-lp-select aria-label="${esc(t('lp.pick'))}">${langAddOptions(current, sourceLang)}</select>
+    <input data-lp-code placeholder="${esc(t('lp.codePh'))}" aria-label="${esc(t('lp.codePh'))}" autocomplete="off" spellcheck="false">
+    <button type="button" class="btn small" data-lp-add>${t('lp.add')}</button>
+  </div>
+  <small class="lp-err" role="alert"></small>`;
+
+/**
+ * Выбор языков перевода: чипы «самоназвание + код» с ×, список частых языков и поле для своего кода.
+ * Значение лежит в скрытом поле name="…" через запятую — формы читают его как раньше (parseLangs).
+ */
+function langPicker(name, langs, sourceLang = '') {
+  return `<div class="lang-picker" data-lp data-source="${esc(sourceLang)}">
+    <input type="hidden" name="${esc(name)}" value="${esc(langs.join(', '))}">
+    <div class="chips"></div>
+    ${langAddBox(langs, sourceLang, '')}
+  </div>`;
+}
+
+function lpState(lp) {
+  const hidden = lp.querySelector('input[type=hidden]');
+  // В форме новой игры язык оригинала редактируется — берём текущее значение поля
+  const source = lp.closest('form')?.elements.sourceLang?.value.trim() || lp.dataset.source || '';
+  return { hidden, langs: parseLangs(hidden.value), source };
+}
+
+function lpRender(lp) {
+  const { langs, source } = lpState(lp);
+  lp.querySelector('.chips').innerHTML = langs.length
+    ? langs
+        .map((l) => `<span class="chip"><b>${esc(langName(l))}</b><span class="mono">${esc(l)}</span><button type="button" data-lp-remove="${esc(l)}" title="${esc(t('lp.remove', { lang: langName(l) }))}" aria-label="${esc(t('lp.remove', { lang: langName(l) }))}">×</button></span>`)
+        .join('')
+    : `<span class="muted">${t('lp.none')}</span>`;
+  lp.querySelector('[data-lp-select]').innerHTML = langAddOptions(langs, source);
+}
+
+function lpAdd(lp, code) {
+  const { hidden, langs, source } = lpState(lp);
+  const err = langCodeError(code, langs, source);
+  lp.querySelector('.lp-err').textContent = err;
+  if (err) return false;
+  hidden.value = [...langs, code].join(', ');
+  lpRender(lp);
+  return true;
+}
+
+/** Код из поля ввода или из списка; '' если ничего не выбрано. */
+function lpPicked(box) {
+  const input = box.querySelector('[data-lp-code]');
+  return input.value.trim() || box.querySelector('[data-lp-select]').value;
+}
+
+// Обработчики выбора языков (и в формах, и на странице игры)
+document.addEventListener('click', (e) => {
+  const rm = e.target.closest('[data-lp-remove]');
+  if (rm) {
+    const lp = rm.closest('[data-lp]');
+    const { hidden, langs } = lpState(lp);
+    hidden.value = langs.filter((l) => l !== rm.dataset.lpRemove).join(', ');
+    lpRender(lp);
+    return;
+  }
+  const add = e.target.closest('[data-lp-add]');
+  if (!add) return;
+  const box = add.closest('.lp-add');
+  const code = lpPicked(box);
+  if (!code) return;
+  if (box.hasAttribute('data-ov-add')) return overviewAddLang(box, code);
+  if (lpAdd(box.closest('[data-lp]'), code)) box.querySelector('[data-lp-code]').value = '';
+});
+document.addEventListener('change', (e) => {
+  const sel = e.target.closest?.('[data-lp-select]');
+  if (!sel || !sel.value) return;
+  const box = sel.closest('.lp-add');
+  if (box.hasAttribute('data-ov-add')) return; // на странице игры добавляем кнопкой — это сохранение
+  lpAdd(box.closest('[data-lp]'), sel.value);
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' || !e.target.matches?.('[data-lp-code]')) return;
+  e.preventDefault(); // не отправлять форму
+  e.target.closest('.lp-add').querySelector('[data-lp-add]').click();
+});
+// Рисуем чипы, когда пикер появился на странице
+new MutationObserver(() => document.querySelectorAll('[data-lp]:not([data-ready])').forEach((lp) => { lp.dataset.ready = '1'; lpRender(lp); })).observe(view, { childList: true, subtree: true });
+
+// ---------- страница-обзор игры ----------
+
+let overview = null; // { slug, game, stats }
+
+async function renderOverview(slug) {
+  const { game, stats, canManage, status } = await api(`/games/${encodeURIComponent(slug)}`);
+  const credits = Object.fromEntries(
+    await Promise.all(game.languages.map(async (l) => [l, await api(`/games/${encodeURIComponent(slug)}/credits?lang=${encodeURIComponent(l)}`).catch(() => null)])),
+  );
+  overview = { slug, game, stats };
+  docTitle(game.title);
+  crumbs.innerHTML = `${gamesCrumb()} / ${esc(game.title)}`;
+  const gh = game.repo ? `https://github.com/${game.repo}` : null;
+  const linkBtn = (l) => `<a class="btn" href="${esc(l.url)}" target="_blank" rel="noopener nofollow">${esc(l.title || t('link.' + l.kind))} ↗</a>`;
+
+  const rows = game.languages
+    .map((l) => {
+      const st = stats.find((x) => x.lang === l) || { approved: 0, voting: 0, total: 0 };
+      const p = pct(st.approved, st.total);
+      return `<div class="ov-lang" data-lang="${esc(l)}">
+        <a class="ov-name" href="${href(slug, l)}"><b>${esc(langName(l))}</b> <span class="muted mono">${esc(l)}</span></a>
+        <span class="ov-progress"><span class="bar"><i style="width:${p}%"></i></span><span class="pct">${p}%</span></span>
+        <span class="ov-count muted">${st.approved}/${st.total}${st.voting ? ` <span class="vcount" title="${esc(t('ov.withVariants', { n: st.voting }))}">+${st.voting}</span>` : ''}</span>
+        ${stageChip(status?.[l]?.status)}
+        <span class="ov-actions">
+          <a class="btn small primary" href="${href(slug, l)}">${t('ov.translate')}</a>
+          ${gh ? `<a class="btn small" href="${esc(gh)}/releases?q=${encodeURIComponent(l + '-')}&expanded=true" target="_blank" rel="noopener" title="${esc(t('ov.downloadTitle', { lang: langName(l) }))}">${t('ov.download')}</a>` : ''}
+          ${canManage ? `<button type="button" class="link" data-ov-remove="${esc(l)}" title="${esc(t('lp.remove', { lang: langName(l) }))}">×</button>` : ''}
+        </span>
+        <div class="ov-confirm" hidden></div>
+      </div>`;
+    })
+    .join('');
+
+  const creditRows = game.languages
+    .map((l) => {
+      const c = credits[l];
+      if (!c?.translators?.length) return '';
+      const top = c.translators.slice(0, 8).map((x) => `${esc(x.login)} <span class="muted">${x.strings}</span>`).join(', ');
+      return `<li><b>${esc(langName(l))}</b> — ${top}${c.translators.length > 8 ? ' …' : ''}</li>`;
+    })
+    .join('');
+
+  view.innerHTML = `
+    <section class="panel game-hero">
+      ${coverImg(game, 'hero-cover')}
+      <div class="hero-body">
+        <h1>${esc(game.title)}</h1>
+        <p class="muted">${t('ov.source', { lang: esc(langName(game.source_lang)) })} · ${t('home.strings', { n: stats[0]?.total ?? 0 })}</p>
+        ${game.description ? `<p class="hero-desc">${esc(game.description)}</p>` : ''}
+        <div class="actions">
+          ${(game.links || []).map(linkBtn).join('')}
+          ${gh ? `<a class="btn" href="${esc(gh)}" target="_blank" rel="noopener">${t('ov.github')}</a><a class="btn primary" href="${esc(gh)}/releases" target="_blank" rel="noopener">${t('ov.releases')}</a>` : ''}
+          ${canManage ? `<a class="btn" href="#/g/${encodeURIComponent(slug)}/settings">${t('game.settings')}</a>` : ''}
+        </div>
+      </div>
+    </section>
+    <section class="panel ov-langs">
+      <h2>${t('ov.languages')}</h2>
+      ${rows || `<p class="muted">${t('ov.noLanguages')}</p>`}
+      ${canManage ? `<div class="ov-addlang"><span class="field-label">${t('ov.addLang')}</span>${langAddBox(game.languages, game.source_lang, 'data-ov-add')}</div>` : ''}
+    </section>
+    <section class="panel">
+      <h2>${t('ov.credits')}</h2>
+      ${creditRows ? `<ul class="ov-credits">${creditRows}</ul>` : `<p class="muted">${t('ov.noCredits')}</p>`}
+    </section>`;
+}
+
+async function saveLanguages(languages, force = false) {
+  await api(`/games/${encodeURIComponent(overview.slug)}/settings`, { method: 'POST', body: { languages, force } });
+}
+
+async function overviewAddLang(box, code) {
+  const err = langCodeError(code, overview.game.languages, overview.game.source_lang);
+  const errBox = box.parentElement.querySelector('.lp-err');
+  errBox.textContent = err;
+  if (err) return;
+  try {
+    await saveLanguages([...overview.game.languages, code]);
+    toast(t('ov.langAdded', { lang: langName(code) }));
+    await route();
+  } catch (e) {
+    errBox.textContent = e.message;
+  }
+}
+
+// Убрать язык: подтверждение прямо в строке (с числом утверждённых строк и вариантов)
+document.addEventListener('click', async (e) => {
+  const rm = e.target.closest('[data-ov-remove]');
+  if (rm && overview) {
+    const l = rm.dataset.ovRemove;
+    const st = overview.stats.find((x) => x.lang === l) || { approved: 0, voting: 0 };
+    const box = rm.closest('.ov-lang').querySelector('.ov-confirm');
+    box.hidden = false;
+    box.innerHTML = `<span>${t('ov.removeConfirm', { lang: esc(langName(l)), approved: st.approved, voting: st.voting })}</span>
+      <button type="button" class="btn small bad" data-ov-remove-yes="${esc(l)}">${t('ov.removeYes')}</button>
+      <button type="button" class="btn small" data-ov-remove-no>${t('common.cancel')}</button>`;
+    return;
+  }
+  if (e.target.closest('[data-ov-remove-no]')) {
+    const box = e.target.closest('.ov-confirm');
+    box.hidden = true;
+    box.innerHTML = '';
+    return;
+  }
+  const yes = e.target.closest('[data-ov-remove-yes]');
+  if (yes && overview) {
+    const l = yes.dataset.ovRemoveYes;
+    try {
+      await saveLanguages(overview.game.languages.filter((x) => x !== l), true);
+      toast(t('ov.langRemoved', { lang: langName(l) }));
+      await route();
+    } catch (err) {
+      toast(err.message);
+    }
+  }
 });
