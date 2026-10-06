@@ -7,14 +7,16 @@ import type { Context, Hono } from 'hono';
 import { z } from 'zod';
 import { userByApiToken } from './auth.js';
 import { origin } from './oauth.js';
+import { variantLimits } from './limits.js';
 
-const INSTRUCTIONS = `LocalizationForum — коллективный перевод игр: участники предлагают варианты строк, голосуют, модераторы утверждают.
+const instructions = (L = variantLimits()) => `LocalizationForum — коллективный перевод игр: участники предлагают варианты строк, голосуют, модераторы утверждают.
 Правила для переводов:
 - сохраняйте плейсхолдеры, теги и переводы строк из оригинала ({0}, {PAWN_label}, %d, <color=…>, \\n) — иначе вариант не примется;
 - учитывайте context строки (кто говорит, где строка в игре) и уже утверждённые переводы соседних строк для единообразия терминов;
 - ваши варианты публикуются от имени пользователя и помечаются на сайте значком «ИИ»; финальное решение принимают модераторы;
 - не предлагайте вариант, если уже есть хороший — лучше проголосуйте за него;
-- у каждого языка есть этап: «Групповой перевод» (open), «Апрув» (review — предлагать и голосовать могут только модераторы), «Готово» (done — изменения закрыты).`;
+- у каждого языка есть этап: «Групповой перевод» (open), «Апрув» (review — предлагать и голосовать могут только модераторы), «Готово» (done — изменения закрыты);
+- лимиты против спама (модераторы языка не ограничены): не больше ${L.perUserString} своих вариантов на строку и ${L.perString} вариантов на строку всего, не больше ${L.perHour} вариантов в час; при ошибке 429 подождите, а не повторяйте сразу. Забаненный пользователь может только читать.`;
 
 type Call = (method: string, path: string, body?: unknown) => Promise<{ status: number; data: any }>;
 
@@ -22,7 +24,7 @@ const text = (data: unknown) => ({ content: [{ type: 'text' as const, text: type
 const failText = (msg: string) => ({ ...text(msg), isError: true });
 
 function buildServer(call: Call, login: string) {
-  const server = new McpServer({ name: 'localization-forum', version: '1.0.0' }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: 'localization-forum', version: '1.0.0' }, { instructions: instructions() });
   const guard = async (method: string, path: string, body?: unknown) => {
     const r = await call(method, path, body);
     if (r.status >= 400) throw new Error(r.data?.error ? `${r.data.error}${r.data.issues ? ': ' + r.data.issues.map((i: any) => i.message).join('; ') : ''}` : `HTTP ${r.status}`);
@@ -138,7 +140,7 @@ function buildServer(call: Call, login: string) {
   tool(
     'vote',
     'Голосовать',
-    'Поставить (vote=true) или снять (vote=false) свой голос за вариант.',
+    'Поставить (vote=true) или снять (vote=false) свой голос за вариант. У строки на одном языке голос может быть только за один вариант: новый голос снимает прежний (их id — в cleared).',
     { variant_id: z.number().int(), vote: z.boolean().default(true) },
     async ({ variant_id, vote }) => guard(vote ? 'POST' : 'DELETE', `/api/variants/${variant_id}/vote`),
   );

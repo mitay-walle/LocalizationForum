@@ -9,6 +9,7 @@ import { env, list } from './env.js';
 import { isBuiltin, listFormats, resolveFormat, validateLinesConfig, makeLinesFormat } from './formats/index.js';
 import { exportLanguage, finalizeSource, importSource, importTranslation, type Game, type InFile } from './sync.js';
 import { validateVariant, type Rule } from './validate.js';
+import { variantLimits } from './limits.js';
 
 const PAGE = 50;
 
@@ -31,7 +32,7 @@ app.onError((err, c) => {
   return c.json({ error: 'Внутренняя ошибка сервера' }, 500);
 });
 
-const fail = (status: 400 | 401 | 403 | 404 | 422, message: string): never => {
+const fail = (status: 400 | 401 | 403 | 404 | 422 | 429, message: string): never => {
   throw new HTTPException(status, { message });
 };
 
@@ -94,10 +95,39 @@ async function langStatus(gameId: number, lang: string): Promise<Status> {
  * open — все; review — предлагать и голосовать только модераторам, утверждать можно; done — никому.
  */
 async function requireStage(user: User, gameId: number, lang: string, action: 'propose' | 'vote' | 'approve') {
+  await requireNotBanned(user, gameId);
   const st = await langStatus(gameId, lang);
   if (st === 'done') fail(403, 'Перевод на этапе «Готово» — он заморожен. Чтобы править, модератор должен вернуть этап «Апрув» или «Групповой перевод».');
   if (st === 'review' && action !== 'approve' && !(await isModerator(user, gameId, lang)))
     fail(403, 'Перевод на этапе «Апрув»: новые варианты и голоса закрыты, модераторы утверждают итог.');
+}
+
+// ---------- баны и лимиты (антиспам) ----------
+
+export interface Ban {
+  id: number;
+  game: string | null;
+  reason: string;
+  until: Date | null;
+}
+
+/** Действующий бан: на всём форуме или (если задан gameId) в этой игре. Истёкшие не считаются. */
+async function activeBan(userId: number, gameId: number | null): Promise<Ban | null> {
+  const [b] = await db()<Ban[]>`
+    select b.id, g.slug as game, b.reason, b.until from bans b left join games g on g.id = b.game_id
+    where b.user_id = ${userId} and (b.game_id is null or b.game_id = ${gameId})
+      and (b.until is null or b.until > now())
+    order by b.game_id nulls first, b.until desc nulls first
+    limit 1`;
+  return b ?? null;
+}
+
+const fmtUntil = (d: Date | null) => (d ? `до ${new Date(d).toISOString().slice(0, 16).replace('T', ' ')} UTC` : 'бессрочно');
+
+/** Забаненный может читать, но не менять ничего в игре (или нигде — при бане на весь форум). */
+async function requireNotBanned(user: User, gameId: number | null) {
+  const b = await activeBan(user.id, gameId);
+  if (b) fail(403, `Вы заблокированы ${b.game ? 'в этой игре' : 'на форуме'} (${fmtUntil(b.until)})${b.reason ? `. Причина: ${b.reason}` : ''}. Читать можно, но предлагать, голосовать и загружать — нет.`);
 }
 
 // ---------- служебное ----------
@@ -166,7 +196,11 @@ app.get('/me', async (c) => {
   if (!u) return c.json({ user: null });
   const mods = await db()<{ slug: string; lang: string }[]>`
     select g.slug, m.lang from moderators m join games g on g.id = m.game_id where m.user_id = ${u.id}`;
-  return c.json({ user: u, moderates: mods });
+  // Действующие баны: game = null — на всём форуме
+  const bans = await db()<Ban[]>`
+    select b.id, g.slug as game, b.reason, b.until from bans b left join games g on g.id = b.game_id
+    where b.user_id = ${u.id} and (b.until is null or b.until > now()) order by b.created_at`;
+  return c.json({ user: u, moderates: mods, bans });
 });
 
 // ---------- чтение ----------
@@ -203,7 +237,8 @@ app.get('/games/:slug', async (c) => {
     where ls.game_id = ${g.id}`;
   const status = Object.fromEntries(g.languages.map((l) => [l, st.find((x) => x.lang === l) ?? { lang: l, status: 'open' }]));
   const moderates = Object.fromEntries(await Promise.all(g.languages.map(async (l) => [l, await isModerator(user, g.id, l)])));
-  return c.json({ game: g, stats, status, moderates, canManage: await isModerator(user, g.id, '*') });
+  const ban = user ? await activeBan(user.id, g.id) : null;
+  return c.json({ game: g, stats, status, moderates, canManage: await isModerator(user, g.id, '*'), ban, limits: variantLimits() });
 });
 
 app.get('/games/:slug/files', async (c) => {
@@ -281,6 +316,7 @@ app.get('/games/:slug/strings', async (c) => {
     total: rows[0]?.total ?? 0,
     canModerate: await isModerator(user, g.id, lang),
     status: await langStatus(g.id, lang),
+    limits: variantLimits(),
     strings: rows.map(({ total: _t, ...r }) => ({ ...r, variants: byString.get(r.id) ?? [] })),
   });
 });
@@ -320,11 +356,29 @@ app.post('/strings/:id/variants', async (c) => {
   if (check) return c.json({ issues }); // только проверить, не сохранять
   await requireStage(user, s.id, lang, 'propose');
   if (issues.some((i) => i.level === 'error')) return c.json({ error: 'Вариант не прошёл проверку', issues }, 422);
-  const [v] = await db()`
-    insert into variants (string_id, lang, text, author_id, ai)
-    values (${s.string_id}, ${lang}, ${value}, ${user.id}, ${c.req.header('x-client') === 'mcp'})
-    on conflict (string_id, lang, text) do nothing
-    returning id`;
+  // Антиспам: лимиты проверяются под advisory-lock пользователя вместе со вставкой. Модераторы языка и админы — без лимитов.
+  const exempt = await isModerator(user, s.id, lang);
+  const L = variantLimits();
+  const v = await db().begin(async (sql) => {
+    await sql`select pg_advisory_xact_lock(${user.id})`;
+    if (!exempt) {
+      const [n] = await sql<{ hour: number; mine: number; total: number }[]>`
+        select
+          (select count(*)::int from variants where author_id = ${user.id} and created_at > now() - interval '1 hour') as hour,
+          (select count(*)::int from variants where string_id = ${s.string_id} and lang = ${lang} and author_id = ${user.id}) as mine,
+          (select count(*)::int from variants where string_id = ${s.string_id} and lang = ${lang}) as total`;
+      if (L.perHour && n.hour >= L.perHour) fail(429, `Слишком много вариантов за час: лимит ${L.perHour}. Попробуйте позже.`);
+      if (L.perUserString && n.mine >= L.perUserString)
+        fail(422, `Вы уже предложили максимум вариантов для этой строки (${L.perUserString}). Удалите свой вариант, чтобы предложить другой, или проголосуйте за лучший.`);
+      if (L.perString && n.total >= L.perString) fail(422, `У этой строки уже максимум вариантов (${L.perString}). Проголосуйте за лучший из них.`);
+    }
+    const [row] = await sql<{ id: number }[]>`
+      insert into variants (string_id, lang, text, author_id, ai)
+      values (${s.string_id}, ${lang}, ${value}, ${user.id}, ${c.req.header('x-client') === 'mcp'})
+      on conflict (string_id, lang, text) do nothing
+      returning id`;
+    return row;
+  });
   if (!v) fail(422, 'Такой вариант уже предложен');
   return c.json({ id: v!.id, issues }, 201);
 });
@@ -352,12 +406,23 @@ app.post('/variants/:id/vote', async (c) => {
   const id = Number(c.req.param('id'));
   const vs = await variantScope(id);
   await requireStage(user, vs.game_id, vs.lang, 'vote');
-  const res = await db()`insert into votes (variant_id, user_id) select ${id}, ${user.id} where exists (select 1 from variants where id = ${id}) on conflict do nothing`;
-  if (!res.count) {
+  // Один голос на строку+язык: голос за этот вариант снимает голоса пользователя с остальных вариантов.
+  // Всё в одной транзакции; advisory-lock на пользователя — чтобы два параллельных голоса не оставили оба.
+  const { cleared, inserted } = await db().begin(async (sql) => {
+    await sql`select pg_advisory_xact_lock(${user.id})`;
+    const gone = await sql<{ variant_id: number }[]>`
+      delete from votes x using variants o, variants v
+      where v.id = ${id} and o.string_id = v.string_id and o.lang = v.lang and o.id <> v.id
+        and x.variant_id = o.id and x.user_id = ${user.id}
+      returning x.variant_id`;
+    const res = await sql`insert into votes (variant_id, user_id) select ${id}, ${user.id} where exists (select 1 from variants where id = ${id}) on conflict do nothing`;
+    return { cleared: gone.map((r) => r.variant_id).sort((a, b) => a - b), inserted: res.count };
+  });
+  if (!inserted) {
     const [exists] = await db()`select 1 from variants where id = ${id}`;
     if (!exists) fail(404, 'Вариант не найден');
   }
-  return c.json(await voteCount(id, user.id));
+  return c.json({ ...(await voteCount(id, user.id)), cleared });
 });
 
 app.delete('/variants/:id/vote', async (c) => {
@@ -525,6 +590,7 @@ async function requireManager(c: Context): Promise<{ user: User; game: Game }> {
   const user = await requireUser(c);
   const game = await gameBySlug(c.req.param('slug')!);
   if (!(await canManage(user, game.id))) fail(403, 'Управлять игрой могут её владелец, модераторы всех языков и администраторы');
+  if (c.req.method !== 'GET') await requireNotBanned(user, game.id); // забаненный управляющий может только смотреть
   return { user, game };
 }
 
@@ -543,6 +609,7 @@ function cleanLanguages(list: unknown, sourceLang: string): string[] {
 /** Создать игру. Создатель становится её владельцем (модератор '*'). */
 app.post('/games', async (c) => {
   const user = await requireUser(c);
+  await requireNotBanned(user, null);
   const b = await body<{ slug: string; title: string; format: string; sourceLang?: string; languages: string[]; repo?: string }>(c);
   const slug = String(b.slug ?? '').trim();
   const title = String(b.title ?? '').trim();
@@ -666,6 +733,102 @@ app.post('/games/:slug/moderators', async (c) => {
   return c.json({ ok: true });
 });
 
+// ---------- баны: в игре (управляющий игрой или админ) и на всём форуме (только админ) ----------
+
+async function listBans(gameId: number | null) {
+  const sql = db();
+  return sql`
+    select b.id, u.login, b.reason, b.until, b.created_at, c.login as by, g.slug as game
+    from bans b join users u on u.id = b.user_id left join users c on c.id = b.created_by left join games g on g.id = b.game_id
+    where ${gameId === null ? sql`b.game_id is null` : sql`b.game_id = ${gameId}`} and (b.until is null or b.until > now())
+    order by b.created_at desc`;
+}
+
+/**
+ * Забанить. days не задан — бессрочно. purge — удалить варианты и голоса пользователя в игре (или везде при глобальном бане);
+ * утверждённые переводы не трогаем: варианты, выбранные как утверждённые, остаются.
+ */
+async function createBan(by: User, gameId: number | null, b: { login?: string; reason?: string; days?: number | null; purge?: boolean }) {
+  const sql = db();
+  const [target] = await sql<{ id: number; login: string; is_admin: boolean }[]>`
+    select id, login, is_admin from users where lower(login) = lower(${String(b.login ?? '').trim()})`;
+  if (!target) fail(404, 'Этот пользователь ещё ни разу не входил на сайт');
+  if (target!.id === by.id) fail(422, 'Нельзя забанить самого себя');
+  if (target!.is_admin && !by.is_admin) fail(403, 'Администратора может забанить только администратор');
+  const reason = String(b.reason ?? '').trim();
+  if (!reason || reason.length > 500) fail(400, 'Укажите причину бана (до 500 символов)');
+  let days: number | null = null;
+  if (b.days !== undefined && b.days !== null) {
+    days = Number(b.days);
+    if (!Number.isFinite(days) || days <= 0 || days > 3650) fail(400, 'Срок бана — число дней от 1 до 3650 (или не указывать — навсегда)');
+  }
+  return sql.begin(async (tx) => {
+    const [ban] = await tx<{ id: number; until: Date | null }[]>`
+      insert into bans (user_id, game_id, reason, until, created_by)
+      values (${target!.id}, ${gameId}, ${reason}, ${days === null ? null : tx`now() + ${days}::float8 * interval '1 day'`}, ${by.id})
+      returning id, until`;
+    const purged = { variants: 0, votes: 0 };
+    if (b.purge) {
+      const scope = gameId === null ? tx`true` : tx`s.game_id = ${gameId}`;
+      const votes = await tx`
+        delete from votes x using variants v, strings s
+        where x.variant_id = v.id and v.string_id = s.id and x.user_id = ${target!.id} and ${scope}`;
+      const vars = await tx`
+        delete from variants v using strings s
+        where v.string_id = s.id and v.author_id = ${target!.id} and ${scope}
+          and not exists (select 1 from approved a where a.variant_id = v.id)`;
+      purged.votes = votes.count;
+      purged.variants = vars.count;
+    }
+    return { ok: true, id: ban.id, login: target!.login, until: ban.until, purged };
+  });
+}
+
+/** Снять бан: ?id= или ?login= (все баны пользователя в этой области). */
+async function removeBan(gameId: number | null, c: Context) {
+  const sql = db();
+  const id = Number(c.req.query('id') || 0);
+  const login = c.req.query('login');
+  if (!id && !login) fail(400, 'Укажите id или login');
+  const scope = gameId === null ? sql`game_id is null` : sql`game_id = ${gameId}`;
+  const res = id
+    ? await sql`delete from bans where id = ${id} and ${scope}`
+    : await sql`delete from bans where user_id in (select id from users where lower(login) = lower(${login!})) and ${scope}`;
+  if (!res.count) fail(404, 'Бан не найден');
+  return { ok: true, removed: res.count };
+}
+
+app.get('/games/:slug/bans', async (c) => {
+  const { game } = await requireManager(c);
+  return c.json({ bans: await listBans(game.id) });
+});
+app.post('/games/:slug/bans', async (c) => {
+  const { user, game } = await requireManager(c);
+  return c.json(await createBan(user, game.id, await body(c)), 201);
+});
+app.delete('/games/:slug/bans', async (c) => {
+  const { game } = await requireManager(c);
+  return c.json(await removeBan(game.id, c));
+});
+
+async function requireAdmin(c: Context) {
+  const user = await requireUser(c);
+  if (!user.is_admin) fail(403, 'Только для администраторов');
+  return user;
+}
+app.get('/admin/bans', async (c) => {
+  await requireAdmin(c);
+  return c.json({ bans: await listBans(null) });
+});
+app.post('/admin/bans', async (c) => {
+  const user = await requireAdmin(c);
+  return c.json(await createBan(user, null, await body(c)), 201);
+});
+app.delete('/admin/bans', async (c) => {
+  await requireAdmin(c);
+  return c.json(await removeBan(null, c));
+});
+
 /** Удалить игру целиком (только администратор). */
 app.delete('/games/:slug', async (c) => {
   const user = await requireUser(c);
@@ -713,6 +876,7 @@ app.post('/formats/preview', async (c) => {
 /** Создать пользовательский построчный формат. */
 app.post('/formats', async (c) => {
   const user = await requireUser(c);
+  await requireNotBanned(user, null);
   const b = await body<{ slug: string; title: string; config: unknown }>(c);
   const slug = String(b.slug ?? '').trim();
   const title = String(b.title ?? '').trim();
@@ -735,6 +899,7 @@ app.post('/formats', async (c) => {
 /** Изменить свой формат (или любой — администратору). Строки игр пересчитаются при следующей загрузке исходников. */
 app.post('/formats/:slug', async (c) => {
   const user = await requireUser(c);
+  await requireNotBanned(user, null);
   const slug = c.req.param('slug');
   const [f] = await db()<{ created_by: number | null }[]>`select created_by from custom_formats where slug = ${slug}`;
   if (!f) fail(404, 'Формат не найден (встроенные форматы и пресеты не редактируются — создайте свой на их основе)');
@@ -835,6 +1000,7 @@ app.post('/games/:slug/status', async (c) => {
   checkLang(g, lang);
   if (!STATUSES.includes(status as Status)) fail(400, 'Этап: open (групповой перевод), review (апрув) или done (готово)');
   if (!(await isModerator(user, g.id, lang))) fail(403, 'Менять этап могут модераторы этого языка');
+  await requireNotBanned(user, g.id);
   await db()`
     insert into language_status (game_id, lang, status, updated_by) values (${g.id}, ${lang}, ${status}, ${user.id})
     on conflict (game_id, lang) do update set status = excluded.status, updated_by = excluded.updated_by, updated_at = now()`;

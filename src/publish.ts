@@ -4,6 +4,7 @@
 import { db } from './db.js';
 import { makeZip } from './zip.js';
 import { exportLanguage, type Game } from './sync.js';
+import { readme } from './readme.js';
 
 const GH = 'https://api.github.com';
 
@@ -44,18 +45,6 @@ function ghError(what: string, r: { status: number; data: any }): never {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-function readme(game: Game, site: string) {
-  return `# ${game.title} — перевод
-
-Перевод ведётся коллективно на форуме: ${site}#/g/${game.slug}
-
-- \`source/\` — оригинальные файлы игры (${game.source_lang})
-${game.languages.map((l) => `- \`${l}/\` — перевод (${l}), только утверждённые строки`).join('\n')}
-
-Файлы в этом репозитории обновляет форум кнопкой «Опубликовать в GitHub». Правки строк вносите на форуме, иначе они перезапишутся.
-`;
-}
 
 export async function publishGame(game: Game, token: string, opts: { version?: string; site: string }): Promise<PublishResult> {
   if (!game.repo || !/^[\w.-]+\/[\w.-]+$/.test(game.repo)) throw new Error('В настройках игры не указан репозиторий вида owner/name');
@@ -106,7 +95,8 @@ export async function publishGame(game: Game, token: string, opts: { version?: s
     path: 'game.json',
     content: JSON.stringify({ slug: game.slug, title: game.title, format: game.format, sourceLang: game.source_lang, languages: game.languages, forum: opts.site }, null, 2) + '\n',
   });
-  if (created) files.push({ path: 'README.md', content: readme(game, opts.site) });
+  // README для игроков генерируется заново при каждой публикации (контент детерминирован — без изменений коммита не будет)
+  files.push({ path: 'README.md', content: readme(game, opts.site) });
 
   // 4. Дерево пачками по ~2 МБ (у GitHub ограничение на размер запроса), каждая пачка поверх предыдущей
   let tree = baseTree;
