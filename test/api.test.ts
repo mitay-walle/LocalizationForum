@@ -134,6 +134,45 @@ describe.skipIf(!url)('api', async () => {
     expect((await call('GET', '/games/rw/credits?lang=ru')).json).toEqual({ translators: [{ login: 'bob', strings: 1 }], moderators: [{ login: 'alice' }] });
   });
 
+  it('translation stages: open → review → done gate actions', async () => {
+    const s = (await call('GET', '/games/rw/strings?lang=ru&filter=untranslated')).json.strings[0];
+    const g0 = (await call('GET', '/games/rw', { token: alice })).json;
+    expect(g0.status.ru.status).toBe('open');
+    expect(g0.moderates).toEqual({ ru: true });
+    expect((await call('GET', '/games/rw', { token: bob })).json.moderates).toEqual({ ru: false });
+
+    // менять этап может только модератор языка
+    expect((await call('POST', '/games/rw/status', { token: bob, body: { lang: 'ru', status: 'review' } })).status).toBe(403);
+    expect((await call('POST', '/games/rw/status', { token: alice, body: { lang: 'ru', status: 'bogus' } })).status).toBe(400);
+    expect((await call('POST', '/games/rw/status', { token: alice, body: { lang: 'ru', status: 'review' } })).json).toMatchObject({ ok: true, title: 'Апрув' });
+    expect((await call('GET', '/games')).json.games.find((g: any) => g.slug === 'rw').status).toEqual({ ru: 'review' });
+    expect((await call('GET', `/games/rw/strings?lang=ru`)).json.status).toBe('review');
+
+    // апрув: участник не предлагает и не голосует, модератор — может
+    const text = s.source; // оригинал проходит проверку плейсхолдеров
+    expect((await call('POST', `/strings/${s.id}/variants`, { token: bob, body: { lang: 'ru', text } })).status).toBe(403);
+    expect((await call('POST', `/strings/${s.id}/variants`, { token: bob, body: { lang: 'ru', text, check: true } })).status).toBe(200);
+    const v = await call('POST', `/strings/${s.id}/variants`, { token: alice, body: { lang: 'ru', text } });
+    expect(v.status).toBe(201);
+    expect((await call('POST', `/variants/${v.json.id}/vote`, { token: bob })).status).toBe(403);
+    expect((await call('POST', `/variants/${v.json.id}/vote`, { token: alice })).status).toBe(200);
+    expect((await call('POST', `/strings/${s.id}/approve`, { token: alice, body: { lang: 'ru', variantId: v.json.id } })).status).toBe(200);
+    const files = (await call('GET', '/games/rw/files?lang=ru')).json.files;
+    expect(files.every((f: any) => typeof f.voting === 'number')).toBe(true);
+
+    // готово: заморожено для всех
+    await call('POST', '/games/rw/status', { token: alice, body: { lang: 'ru', status: 'done' } });
+    expect((await call('DELETE', `/strings/${s.id}/approve?lang=ru`, { token: alice })).status).toBe(403);
+    expect((await call('POST', `/strings/${s.id}/variants`, { token: alice, body: { lang: 'ru', text: text + ' ' } })).status).toBe(403);
+    expect((await call('DELETE', `/variants/${v.json.id}`, { token: alice })).status).toBe(403);
+    expect((await call('DELETE', `/variants/${v.json.id}/vote`, { token: alice })).status).toBe(403);
+
+    // назад к групповому переводу — всё снова открыто
+    await call('POST', '/games/rw/status', { token: alice, body: { lang: 'ru', status: 'open' } });
+    expect((await call('DELETE', `/strings/${s.id}/approve?lang=ru`, { token: alice })).status).toBe(200);
+    expect((await call('DELETE', `/variants/${v.json.id}`, { token: alice })).status).toBe(200);
+  });
+
   it('reimport marks changed translations stale and removes missing files', async () => {
     const files = walk(fixtures).map((f) =>
       f.path.endsWith('Alerts.xml') ? { ...f, content: f.content.replace('is starving &amp; needs food', 'is hungry') } : f,
