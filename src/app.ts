@@ -102,6 +102,9 @@ app.get('/auth/callback', async (c) => {
   const code = c.req.query('code');
   const state = c.req.query('state');
   if (!code || !state) fail(400, 'Нет code/state');
+  // У GitHub-приложения один адрес возврата, поэтому публикация возвращается сюда же — различаем по state.
+  const pub = await readPublishState(state!);
+  if (pub) return handlePublishCallback(c, pub);
   let ret: string;
   try {
     ret = await verifyState(state!);
@@ -718,22 +721,25 @@ app.post('/games/:slug/publish/start', async (c) => {
     .sign(jwtKey());
   const url = new URL('https://github.com/login/oauth/authorize');
   url.searchParams.set('client_id', env('GITHUB_CLIENT_ID'));
-  url.searchParams.set('redirect_uri', new URL('/api/auth/callback/publish', c.req.url).toString());
+  url.searchParams.set('redirect_uri', new URL('/api/auth/callback', c.req.url).toString());
   url.searchParams.set('scope', 'public_repo');
   url.searchParams.set('state', state);
   return c.json({ url: url.toString() });
 });
 
-/** GitHub вернул пользователя с кодом: получаем одноразовый токен, публикуем, возвращаем на сайт с итогом. */
-app.get('/auth/callback/publish', async (c) => {
-  let st: { gid: number; uid: number; ver: string; ret: string };
+type PublishState = { gid: number; uid: number; ver: string; ret: string };
+
+async function readPublishState(state: string): Promise<PublishState | null> {
   try {
-    const { payload } = await jwtVerify(c.req.query('state') ?? '', jwtKey());
-    if (payload.typ !== 'publish') throw new Error();
-    st = payload as unknown as typeof st;
+    const { payload } = await jwtVerify(state, jwtKey());
+    return payload.typ === 'publish' ? (payload as unknown as PublishState) : null;
   } catch {
-    return c.text('Ссылка публикации устарела — нажмите «Опубликовать» ещё раз', 400);
+    return null;
   }
+}
+
+/** GitHub вернул пользователя с кодом: получаем одноразовый токен, публикуем, возвращаем на сайт с итогом. */
+async function handlePublishCallback(c: Context, st: PublishState) {
   const [g] = await db()<Game[]>`select id, slug, title, repo, format, source_lang, languages, rules from games where id = ${st.gid}`;
   const back = (result: unknown) => c.redirect(`${st.ret}#/g/${encodeURIComponent(g?.slug ?? '')}/settings?pub=${encodeURIComponent(JSON.stringify(result))}`);
   if (!g) return back({ error: 'Игра не найдена' });
@@ -748,7 +754,7 @@ app.get('/auth/callback/publish', async (c) => {
       client_id: env('GITHUB_CLIENT_ID'),
       client_secret: env('GITHUB_CLIENT_SECRET'),
       code: c.req.query('code'),
-      redirect_uri: new URL('/api/auth/callback/publish', c.req.url).toString(),
+      redirect_uri: new URL('/api/auth/callback', c.req.url).toString(),
     }),
   });
   const tok = (await tokenRes.json().catch(() => ({}))) as { access_token?: string; error_description?: string };
@@ -760,4 +766,4 @@ app.get('/auth/callback/publish', async (c) => {
   } catch (e) {
     return back({ error: (e as Error).message });
   }
-});
+}
