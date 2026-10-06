@@ -21,8 +21,8 @@ export interface Game {
 export const hashSource = (s: string) => createHash('sha1').update(s).digest('hex');
 const norm = (p: string) => p.replace(/\\/g, '/').replace(/^\.?\//, '');
 
-function parseFiles(game: Game, files: InFile[]) {
-  const format = getFormat(game.format);
+async function parseFiles(game: Game, files: InFile[]) {
+  const format = await getFormat(game.format);
   const parsed: { file: string; key: string; source: string; context: string | null; position: number }[] = [];
   const errors: string[] = [];
   for (const f of files) {
@@ -36,7 +36,7 @@ function parseFiles(game: Game, files: InFile[]) {
       errors.push(`${path}: ${(e as Error).message}`);
     }
   }
-  return { parsed, errors };
+  return { parsed, errors, format };
 }
 
 /**
@@ -44,11 +44,21 @@ function parseFiles(game: Game, files: InFile[]) {
  * (их переводы становятся «устаревшими» через source_hash), пропавшие помечаются removed.
  */
 export async function importSource(game: Game, files: InFile[]) {
-  const { parsed, errors } = parseFiles(game, files);
+  const { parsed, errors, format } = await parseFiles(game, files);
   if (errors.length && !parsed.length) return { added: 0, changed: 0, removed: 0, unchanged: 0, errors };
 
   const sql = db();
   return sql.begin(async (tx) => {
+    // Для построчных форматов храним оригинал целиком: перевод собирается поверх него.
+    if (format.skeleton) {
+      const originals = files
+        .map((f) => ({ game_id: game.id, path: norm(f.path), content: f.content }))
+        .filter((f) => format.matches(f.path));
+      for (let i = 0; i < originals.length; i += 200) {
+        await tx`insert into source_files ${tx(originals.slice(i, i + 200), 'game_id', 'path', 'content')}
+          on conflict (game_id, path) do update set content = excluded.content, updated_at = now()`;
+      }
+    }
     const existing = await tx<{ id: number; file: string; key: string; source_hash: string; removed: boolean }[]>`
       select id, file, key, source_hash, removed from strings where game_id = ${game.id}`;
     const byKey = new Map(existing.map((r) => [`${r.file}\u0000${r.key}`, r]));
@@ -102,6 +112,7 @@ export async function finalizeSource(game: Game, paths: string[]) {
   const res = await db()`
     update strings set removed = true, updated_at = now()
     where game_id = ${game.id} and not removed and not (file = any(${keep}))`;
+  await db()`delete from source_files where game_id = ${game.id} and not (path = any(${keep}))`;
   return { removed: res.count };
 }
 
@@ -110,7 +121,7 @@ export async function finalizeSource(game: Game, paths: string[]) {
  * переводы там, где их ещё нет. overwrite=true — перезаписать и существующие.
  */
 export async function importTranslation(game: Game, lang: string, files: InFile[], overwrite = false) {
-  const { parsed, errors } = parseFiles(game, files);
+  const { parsed, errors } = await parseFiles(game, files);
   const sql = db();
   const strings = await sql<{ id: number; file: string; key: string; source: string; source_hash: string }[]>`
     select id, file, key, source, source_hash from strings where game_id = ${game.id} and not removed`;
@@ -139,7 +150,10 @@ export async function importTranslation(game: Game, lang: string, files: InFile[
 
 /** Собрать файлы перевода в родном формате игры. */
 export async function exportLanguage(game: Game, lang: string) {
-  const format = getFormat(game.format);
+  const format = await getFormat(game.format);
+  const originals = format.skeleton
+    ? new Map((await db()<{ path: string; content: string }[]>`select path, content from source_files where game_id = ${game.id}`).map((r) => [r.path, r.content]))
+    : new Map<string, string>();
   const rows = await db()<{ file: string; key: string; source: string; text: string | null }[]>`
     select s.file, s.key, s.source, a.text
     from strings s
@@ -164,6 +178,16 @@ export async function exportLanguage(game: Game, lang: string) {
       if (m && r.text !== null) listHasTranslation.add(m[1]);
     }
     const out: OutString[] = [];
+    if (format.skeleton) {
+      // Файл собирается поверх оригинала: отдаём все строки, непереведённые — текстом оригинала.
+      const original = originals.get(file);
+      const done = list.filter((r) => r.text !== null).length;
+      if (!done || original === undefined) continue;
+      translated += done;
+      const all = list.map((r) => ({ key: r.key, source: r.source, text: r.text ?? r.source }));
+      files.push({ path: file, content: format.serialize(file, all, original) });
+      continue;
+    }
     for (const r of list) {
       const m = r.key.match(/^(.*)\[\d+\]$/);
       if (r.text !== null) {

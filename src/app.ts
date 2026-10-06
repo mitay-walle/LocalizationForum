@@ -4,7 +4,7 @@ import { HTTPException } from 'hono/http-exception';
 import { allowedReturn, currentUser, isModerator, signSession, signState, upsertUser, verifyState, type User } from './auth.js';
 import { db } from './db.js';
 import { env, list } from './env.js';
-import { formatIds } from './formats/index.js';
+import { isBuiltin, listFormats, resolveFormat, validateLinesConfig, makeLinesFormat } from './formats/index.js';
 import { exportLanguage, finalizeSource, importSource, importTranslation, type Game, type InFile } from './sync.js';
 import { validateVariant, type Rule } from './validate.js';
 
@@ -65,6 +65,14 @@ async function body<T>(c: Context): Promise<T> {
   } catch {
     return fail(400, 'Ожидался JSON');
   }
+}
+
+/** Проверки перевода: плейсхолдеры + правила языка игры + ограничения формата файла. */
+async function checkText(g: Game & { source: string }, lang: string, text: string) {
+  const issues = validateVariant(g.source, text, ((g.rules as Record<string, Rule[]>)[lang] ?? []) as Rule[]);
+  const format = await resolveFormat(g.format);
+  for (const m of format?.validate?.(text) ?? []) issues.unshift({ level: 'error', message: m });
+  return issues;
 }
 
 // ---------- служебное ----------
@@ -271,7 +279,7 @@ app.post('/strings/:id/variants', async (c) => {
   const { lang, text, check } = await body<{ lang: string; text: string; check?: boolean }>(c);
   checkLang(s, lang);
   const value = String(text ?? '').replace(/\r\n/g, '\n');
-  const issues = validateVariant(s.source, value, ((s.rules as Record<string, Rule[]>)[lang] ?? []) as Rule[]);
+  const issues = await checkText(s, lang, value);
   if (check) return c.json({ issues }); // только проверить, не сохранять
   if (issues.some((i) => i.level === 'error')) return c.json({ error: 'Вариант не прошёл проверку', issues }, 422);
   const [v] = await db()`
@@ -337,7 +345,7 @@ app.post('/strings/:id/approve', async (c) => {
   } else {
     // Модератор может поправить текст сам — проверки те же, что и для вариантов.
     value = String(text ?? '').replace(/\r\n/g, '\n');
-    const issues = validateVariant(s.source, value, ((s.rules as Record<string, Rule[]>)[lang] ?? []) as Rule[]);
+    const issues = await checkText(s, lang, value);
     if (issues.some((i) => i.level === 'error')) return c.json({ error: 'Текст не прошёл проверку', issues }, 422);
   }
   await db()`
@@ -413,7 +421,7 @@ interface GameMeta {
 
 async function upsertGame(meta: GameMeta, rules: Record<string, Rule[]> = {}): Promise<Game> {
   if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(meta.slug ?? '')) fail(400, 'slug: латиница в нижнем регистре, цифры и дефис');
-  if (!formatIds.includes(meta.format)) fail(400, `format: одно из ${formatIds.join(', ')}`);
+  if (!(await resolveFormat(meta.format))) fail(400, `Неизвестный формат ${meta.format}`);
   if (!Array.isArray(meta.languages) || !meta.languages.length) fail(400, 'languages: непустой список');
   const [g] = await db()<Game[]>`
     insert into games (slug, title, format, source_lang, languages, repo, rules)
@@ -478,7 +486,7 @@ function cleanLanguages(list: unknown, sourceLang: string): string[] {
   return langs;
 }
 
-app.get('/formats', (c) => c.json({ formats: formatIds }));
+
 
 /** Создать игру. Создатель становится её владельцем (модератор '*'). */
 app.post('/games', async (c) => {
@@ -489,7 +497,7 @@ app.post('/games', async (c) => {
   const sourceLang = String(b.sourceLang ?? 'en').trim() || 'en';
   if (!SLUG_RE.test(slug)) fail(400, 'Адрес: латиница в нижнем регистре, цифры и дефис');
   if (!title || title.length > 200) fail(400, 'Укажите название игры');
-  if (!formatIds.includes(b.format)) fail(400, `Формат: одно из ${formatIds.join(', ')}`);
+  if (!(await resolveFormat(String(b.format ?? '')))) fail(400, 'Выберите формат файлов');
   if (!LANG_RE.test(sourceLang)) fail(400, 'Неверный код языка оригинала');
   const languages = cleanLanguages(b.languages, sourceLang);
   const repo = b.repo?.trim() || null;
@@ -516,13 +524,20 @@ app.get('/games/:slug/manage', async (c) => {
     where m.game_id = ${game.id} order by m.lang, u.login`;
   const [files] = await db()<{ files: number; strings: number }[]>`
     select count(distinct file)::int as files, count(*)::int as strings from strings where game_id = ${game.id} and not removed`;
-  return c.json({ game, moderators, ...files, formats: formatIds });
+  return c.json({ game, moderators, ...files });
 });
 
 /** Изменить название, языки, репозиторий, правила проверок. */
 app.post('/games/:slug/settings', async (c) => {
   const { game } = await requireManager(c);
-  const b = await body<{ title?: string; languages?: string[]; repo?: string | null; rules?: Record<string, Rule[]> }>(c);
+  const b = await body<{ title?: string; languages?: string[]; repo?: string | null; rules?: Record<string, Rule[]>; format?: string }>(c);
+  let format = game.format;
+  if (b.format !== undefined && b.format !== game.format) {
+    if (!(await resolveFormat(String(b.format)))) fail(400, 'Неизвестный формат');
+    const [{ n }] = await db()<{ n: number }[]>`select count(*)::int as n from strings where game_id = ${game.id}`;
+    if (n) fail(422, 'Формат можно сменить, только пока в игре нет строк');
+    format = String(b.format);
+  }
   const title = b.title !== undefined ? String(b.title).trim() : game.title;
   if (!title || title.length > 200) fail(400, 'Укажите название игры');
   const languages = b.languages !== undefined ? cleanLanguages(b.languages, game.source_lang) : game.languages;
@@ -545,7 +560,7 @@ app.post('/games/:slug/settings', async (c) => {
     rules = b.rules;
   }
   await db()`
-    update games set title = ${title}, languages = ${languages}, repo = ${repo},
+    update games set title = ${title}, languages = ${languages}, repo = ${repo}, format = ${format},
       rules = ${db().json(rules as never)}, updated_at = now()
     where id = ${game.id}`;
   return c.json({ ok: true });
@@ -596,4 +611,85 @@ app.delete('/games/:slug', async (c) => {
   const g = await gameBySlug(c.req.param('slug'));
   await db()`delete from games where id = ${g.id}`;
   return c.json({ ok: true });
+});
+
+
+// ---------- форматы файлов (data-driven) ----------
+
+const FORMAT_SLUG_RE = /^[a-z0-9][a-z0-9-]{1,40}$/;
+
+app.get('/formats', async (c) => c.json({ formats: await listFormats() }));
+
+/** Проверить конфиг формата на примере файла: какие строки он найдёт и собирается ли файл обратно байт в байт. */
+app.post('/formats/preview', async (c) => {
+  await requireUser(c);
+  const b = await body<{ config?: unknown; format?: string; path: string; content: string }>(c);
+  let format;
+  try {
+    format = b.config !== undefined ? makeLinesFormat('preview', b.config) : await resolveFormat(String(b.format));
+  } catch (e) {
+    return fail(422, (e as Error).message);
+  }
+  if (!format) fail(404, 'Формат не найден');
+  const path = String(b.path ?? 'file');
+  const content = String(b.content ?? '');
+  if (content.length > 2_000_000) fail(400, 'Файл слишком большой для предпросмотра');
+  const matches = format!.matches(path);
+  let strings: { key: string; source: string; context?: string }[] = [];
+  let roundTrip: boolean | null = null;
+  try {
+    strings = format!.parse(path, content);
+    if (format!.skeleton) {
+      roundTrip = format!.serialize(path, strings.map((s) => ({ key: s.key, source: s.source, text: s.source })), content) === content;
+    }
+  } catch (e) {
+    return fail(422, `Не удалось разобрать файл: ${(e as Error).message}`);
+  }
+  return c.json({ matches, count: strings.length, roundTrip, strings: strings.slice(0, 200) });
+});
+
+/** Создать пользовательский построчный формат. */
+app.post('/formats', async (c) => {
+  const user = await requireUser(c);
+  const b = await body<{ slug: string; title: string; config: unknown }>(c);
+  const slug = String(b.slug ?? '').trim();
+  const title = String(b.title ?? '').trim();
+  if (!FORMAT_SLUG_RE.test(slug)) fail(400, 'Код формата: латиница в нижнем регистре, цифры и дефис, 2–41 символ');
+  if (isBuiltin(slug)) fail(422, 'Такой код занят встроенным форматом');
+  if (!title || title.length > 120) fail(400, 'Укажите название формата');
+  let config;
+  try {
+    config = validateLinesConfig(b.config);
+  } catch (e) {
+    return fail(422, (e as Error).message);
+  }
+  const res = await db()`
+    insert into custom_formats (slug, title, config, created_by) values (${slug}, ${title}, ${db().json(config as never)}, ${user.id})
+    on conflict (slug) do nothing`;
+  if (!res.count) fail(422, 'Формат с таким кодом уже есть');
+  return c.json({ slug }, 201);
+});
+
+/** Изменить свой формат (или любой — администратору). Строки игр пересчитаются при следующей загрузке исходников. */
+app.post('/formats/:slug', async (c) => {
+  const user = await requireUser(c);
+  const slug = c.req.param('slug');
+  const [f] = await db()<{ created_by: number | null }[]>`select created_by from custom_formats where slug = ${slug}`;
+  if (!f) fail(404, 'Формат не найден (встроенные форматы и пресеты не редактируются — создайте свой на их основе)');
+  if (f!.created_by !== user.id && !user.is_admin) fail(403, 'Менять формат может его автор или администратор');
+  const b = await body<{ title?: string; config?: unknown }>(c);
+  let config;
+  try {
+    config = b.config !== undefined ? validateLinesConfig(b.config) : undefined;
+  } catch (e) {
+    return fail(422, (e as Error).message);
+  }
+  await db()`
+    update custom_formats set
+      title = coalesce(${b.title?.trim() || null}, title),
+      config = coalesce(${config ? db().json(config as never) : null}, config),
+      updated_at = now()
+    where slug = ${slug}`;
+  const games = await db()<{ slug: string }[]>`select slug from games where format = ${slug}`;
+  return c.json({ ok: true, games: games.map((g) => g.slug) });
 });

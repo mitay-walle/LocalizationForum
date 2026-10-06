@@ -1,12 +1,13 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { getFormat } from '../src/formats/index.js';
+import { jsonFlat, jsonNested } from '../src/formats/json.js';
+import { rimworld } from '../src/formats/rimworld.js';
 
 const fx = (p: string) => readFileSync(join(import.meta.dirname, 'fixtures', p), 'utf8');
 
 describe('rimworld', () => {
-  const f = getFormat('rimworld');
+  const f = rimworld;
 
   it('matches only Keyed/DefInjected xml', () => {
     expect(f.matches('Core/Keyed/Alerts.xml')).toBe(true);
@@ -55,7 +56,7 @@ describe('rimworld', () => {
 
 describe('json', () => {
   it('nested flatten and rebuild', () => {
-    const f = getFormat('json-nested');
+    const f = jsonNested;
     const s = f.parse('en.json', fx('json/en.json'));
     expect(s.map((x) => x.key)).toEqual(['menu.start_game', 'menu.settings', 'menu.exit', 'hud.ammo', 'hud.reactor']);
     const out = JSON.parse(f.serialize('en.json', [{ key: 'menu.start_game', source: '', text: 'Новая игра' }, { key: 'hud.ammo', source: '', text: 'Патроны: %d/%d' }]));
@@ -63,7 +64,7 @@ describe('json', () => {
   });
 
   it('flat', () => {
-    const f = getFormat('json');
+    const f = jsonFlat;
     expect(JSON.parse(f.serialize('a.json', [{ key: 'a.b', source: '', text: 'x' }]))).toEqual({ 'a.b': 'x' });
   });
 });
