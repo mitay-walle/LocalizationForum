@@ -1,4 +1,4 @@
-// Единственная функция Vercel: все /api/* переписываются сюда (см. vercel.json).
-import { app } from '../src/app.js';
+// Единственная функция Vercel: /api/* и /.well-known/* переписываются сюда (см. vercel.json).
+import { root } from '../src/server.js';
 
-export default app;
+export default root;
