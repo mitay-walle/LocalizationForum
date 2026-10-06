@@ -84,7 +84,7 @@ export default {
   'str.anon': '匿名',
   'str.ai': 'AI',
   'str.aiTitle': '由 AI 助手通过 MCP 代表用户提交',
-  'str.unapprove': '撤回',
+  'str.unapprove': '撤销批准',
   'str.vote': '投票',
   'str.unvote': '取消投票',
   'str.voteClosed': '此阶段已关闭投票',

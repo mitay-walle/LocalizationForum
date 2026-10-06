@@ -84,7 +84,7 @@ export default {
   'str.anon': 'анонім',
   'str.ai': 'ШІ',
   'str.aiTitle': 'Запропоновано ШІ-асистентом через MCP від імені користувача',
-  'str.unapprove': 'зняти',
+  'str.unapprove': 'Скасувати затвердження',
   'str.vote': 'Голосувати',
   'str.unvote': 'Прибрати голос',
   'str.voteClosed': 'Голосування закрите на цьому етапі',

@@ -84,7 +84,7 @@ export default {
   'str.anon': 'anonym',
   'str.ai': 'KI',
   'str.aiTitle': 'Von einem KI-Assistenten über MCP im Namen des Nutzers vorgeschlagen',
-  'str.unapprove': 'aufheben',
+  'str.unapprove': 'Bestätigung aufheben',
   'str.vote': 'Abstimmen',
   'str.unvote': 'Stimme entfernen',
   'str.voteClosed': 'In dieser Phase ist die Abstimmung geschlossen',

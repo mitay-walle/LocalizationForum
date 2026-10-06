@@ -84,7 +84,7 @@ export default {
   'str.anon': 'anônimo',
   'str.ai': 'IA',
   'str.aiTitle': 'Proposta por um assistente de IA via MCP em nome do usuário',
-  'str.unapprove': 'remover',
+  'str.unapprove': 'Desfazer aprovação',
   'str.vote': 'Votar',
   'str.unvote': 'Remover voto',
   'str.voteClosed': 'A votação está fechada nesta etapa',

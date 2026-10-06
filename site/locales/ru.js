@@ -92,7 +92,7 @@ export default {
   'str.anon': 'аноним',
   'str.ai': 'ИИ',
   'str.aiTitle': 'Предложено ИИ-ассистентом через MCP от имени пользователя',
-  'str.unapprove': 'снять',
+  'str.unapprove': 'Отменить утверждение',
   'str.vote': 'Голосовать',
   'str.unvote': 'Убрать голос',
   'str.voteClosed': 'Голосование закрыто на этом этапе',

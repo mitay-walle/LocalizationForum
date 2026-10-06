@@ -84,7 +84,7 @@ export default {
   'str.anon': '匿名',
   'str.ai': 'AI',
   'str.aiTitle': 'ユーザーの代わりに AI アシスタントが MCP 経由で提案',
-  'str.unapprove': '取り消す',
+  'str.unapprove': '承認を取り消す',
   'str.vote': '投票する',
   'str.unvote': '投票を取り消す',
   'str.voteClosed': 'この段階では投票できません',

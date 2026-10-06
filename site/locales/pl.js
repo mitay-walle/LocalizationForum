@@ -84,7 +84,7 @@ export default {
   'str.anon': 'anonim',
   'str.ai': 'AI',
   'str.aiTitle': 'Zaproponowane przez asystenta AI przez MCP w imieniu użytkownika',
-  'str.unapprove': 'cofnij',
+  'str.unapprove': 'Cofnij zatwierdzenie',
   'str.vote': 'Głosuj',
   'str.unvote': 'Wycofaj głos',
   'str.voteClosed': 'Na tym etapie głosowanie jest zamknięte',
