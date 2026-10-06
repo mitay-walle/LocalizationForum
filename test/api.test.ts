@@ -155,7 +155,8 @@ describe.skipIf(!url)('api', async () => {
     expect(exp.translated).toBe(3);
     const keyed = exp.files.find((f: any) => f.path === 'Core/Keyed/Alerts.xml').content;
     expect(keyed).toContain('<Starving>{PAWN_nameDef} умирает от голода</Starving>');
-    expect(keyed).not.toContain('BreakRiskMinor');
+    // непереведённые строки выгружаются оригиналом
+    expect(keyed).toMatch(/<BreakRiskMinor>[^<]+<\/BreakRiskMinor>/);
     const names = exp.files.find((f: any) => f.path.endsWith('Names.xml')).content;
     expect(names).toContain('<li>r_name-&gt;[adj] [noun]</li>\n    <li>adj-&gt;Храбрый</li>\n    <li>noun-&gt;Wolf</li>');
 
@@ -262,7 +263,9 @@ describe.skipIf(!url)('api', async () => {
     const tr = await call('POST', '/games/site-game/translation', { token: carol, body: { lang: 'uk', files: [{ path: 'en.json', content: '{"menu":{"start":"Почати"}}' }] } });
     expect(tr.json).toMatchObject({ imported: 1 });
     const exp = (await call('GET', '/games/site-game/export?lang=uk')).json;
-    expect(JSON.parse(exp.files[0].content)).toEqual({ menu: { start: 'Почати' } });
+    const uk = JSON.parse(exp.files[0].content);
+    expect(uk.menu.start).toBe('Почати');
+    expect(Object.keys(uk.menu).length).toBe(2); // вторая строка — оригиналом
 
     expect((await call('POST', '/games/site-game/moderators', { token: carol, body: { lang: 'ru', login: 'dave' } })).status).toBe(200);
     expect((await call('GET', '/games/site-game/strings?lang=ru', { token: dave })).json.canModerate).toBe(true);
@@ -317,6 +320,6 @@ describe.skipIf(!url)('api', async () => {
     expect(rp.json).toMatchObject({ added: 0, changed: 0, unchanged: 4, removed: 0 });
     // полная замена исходников удаляет и сохранённые оригиналы
     await call('POST', '/games/gp/source', { token: erin, body: { files: [{ path: 'Scripts/B.gpc', content: 'Me:\r\nYes.\r\n0' }], paths: ['Scripts/B.gpc'] } });
-    expect((await call('GET', '/games/gp/export?lang=ru')).json.files).toEqual([]);
+    expect((await call('GET', '/games/gp/export?lang=ru')).json.files).toEqual([{ path: 'Scripts/B.gpc', content: 'Me:\r\nYes.\r\n0' }]);
   });
 });

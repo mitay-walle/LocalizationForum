@@ -96,7 +96,7 @@ describe.skipIf(!url)('publish to github', async () => {
     expect(r).toMatchObject({ created: true, releases: [], repo: 'mitay-walle/localization_gunpoint_ru' });
     const repo = repos.get('mitay-walle/localization_gunpoint_ru');
     const files = repo.trees[repo.commits[repo.commit].tree];
-    expect(Object.keys(files).sort()).toEqual(['README.md', 'game.json', 'source/Scripts/Intro.gpc']);
+    expect(Object.keys(files).sort()).toEqual(['README.md', 'game.json', 'ru/Scripts/Intro.gpc', 'source/Scripts/Intro.gpc']);
     expect(JSON.parse(files['game.json'])).toMatchObject({ slug: 'gp', format: 'gunpoint', languages: ['ru'] });
     // README для игроков: качать Release, а не исходники; раздел на языке перевода + английский
     const md: string = files['README.md'];
