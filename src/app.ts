@@ -78,6 +78,28 @@ async function checkText(g: Game & { source: string }, lang: string, text: strin
   return issues;
 }
 
+// ---------- этапы перевода ----------
+
+export const STATUSES = ['open', 'review', 'done'] as const;
+type Status = (typeof STATUSES)[number];
+const STATUS_TITLE: Record<Status, string> = { open: 'Групповой перевод', review: 'Апрув', done: 'Готово' };
+
+async function langStatus(gameId: number, lang: string): Promise<Status> {
+  const [r] = await db()<{ status: Status }[]>`select status from language_status where game_id = ${gameId} and lang = ${lang}`;
+  return r?.status ?? 'open';
+}
+
+/**
+ * Можно ли менять варианты/голоса/утверждения на этом этапе.
+ * open — все; review — предлагать и голосовать только модераторам, утверждать можно; done — никому.
+ */
+async function requireStage(user: User, gameId: number, lang: string, action: 'propose' | 'vote' | 'approve') {
+  const st = await langStatus(gameId, lang);
+  if (st === 'done') fail(403, 'Перевод на этапе «Готово» — он заморожен. Чтобы править, модератор должен вернуть этап «Апрув» или «Групповой перевод».');
+  if (st === 'review' && action !== 'approve' && !(await isModerator(user, gameId, lang)))
+    fail(403, 'Перевод на этапе «Апрув»: новые варианты и голоса закрыты, модераторы утверждают итог.');
+}
+
 // ---------- служебное ----------
 
 app.get('/health', async (c) => {
@@ -155,7 +177,8 @@ app.get('/games', async (c) => {
       (select count(*)::int from strings s where s.game_id = g.id and not s.removed) as total,
       coalesce((select jsonb_object_agg(lang, n) from (
         select a.lang, count(*)::int as n from approved a join strings s on s.id = a.string_id
-        where s.game_id = g.id and not s.removed group by a.lang) t), '{}') as approved
+        where s.game_id = g.id and not s.removed group by a.lang) t), '{}') as approved,
+      coalesce((select jsonb_object_agg(ls.lang, ls.status) from language_status ls where ls.game_id = g.id), '{}') as status
     from games g order by g.title`;
   return c.json({ games: rows });
 });
@@ -175,14 +198,21 @@ app.get('/games/:slug', async (c) => {
     where s.game_id = ${g.id} and not s.removed
     group by l.lang`;
   const user = await currentUser(c);
-  return c.json({ game: g, stats, canManage: await isModerator(user, g.id, '*') });
+  const st = await db()<{ lang: string; status: Status; updated_at: string; by: string | null }[]>`
+    select ls.lang, ls.status, ls.updated_at, u.login as by from language_status ls left join users u on u.id = ls.updated_by
+    where ls.game_id = ${g.id}`;
+  const status = Object.fromEntries(g.languages.map((l) => [l, st.find((x) => x.lang === l) ?? { lang: l, status: 'open' }]));
+  const moderates = Object.fromEntries(await Promise.all(g.languages.map(async (l) => [l, await isModerator(user, g.id, l)])));
+  return c.json({ game: g, stats, status, moderates, canManage: await isModerator(user, g.id, '*') });
 });
 
 app.get('/games/:slug/files', async (c) => {
   const g = await gameBySlug(c.req.param('slug'));
   const lang = checkLang(g, c.req.query('lang'));
   const files = await db()`
-    select s.file, count(*)::int as total, count(a.string_id)::int as approved
+    select s.file, count(*)::int as total, count(a.string_id)::int as approved,
+      count(*) filter (where a.string_id is null and exists (
+        select 1 from variants v where v.string_id = s.id and v.lang = ${lang}))::int as voting
     from strings s left join approved a on a.string_id = s.id and a.lang = ${lang}
     where s.game_id = ${g.id} and not s.removed
     group by s.file order by s.file`;
@@ -250,6 +280,7 @@ app.get('/games/:slug/strings', async (c) => {
     pageSize: PAGE,
     total: rows[0]?.total ?? 0,
     canModerate: await isModerator(user, g.id, lang),
+    status: await langStatus(g.id, lang),
     strings: rows.map(({ total: _t, ...r }) => ({ ...r, variants: byString.get(r.id) ?? [] })),
   });
 });
@@ -287,6 +318,7 @@ app.post('/strings/:id/variants', async (c) => {
   const value = String(text ?? '').replace(/\r\n/g, '\n');
   const issues = await checkText(s, lang, value);
   if (check) return c.json({ issues }); // только проверить, не сохранять
+  await requireStage(user, s.id, lang, 'propose');
   if (issues.some((i) => i.level === 'error')) return c.json({ error: 'Вариант не прошёл проверку', issues }, 422);
   const [v] = await db()`
     insert into variants (string_id, lang, text, author_id, ai)
@@ -303,13 +335,23 @@ app.delete('/variants/:id', async (c) => {
     select v.id, v.author_id, s.game_id, v.lang from variants v join strings s on s.id = v.string_id where v.id = ${Number(c.req.param('id'))}`;
   if (!v) fail(404, 'Вариант не найден');
   if (v!.author_id !== user.id && !(await isModerator(user, v!.game_id, v!.lang))) fail(403, 'Удалять можно только свои варианты');
+  await requireStage(user, v!.game_id, v!.lang, 'propose');
   await db()`delete from variants where id = ${v!.id}`;
   return c.json({ ok: true });
 });
 
+async function variantScope(id: number) {
+  const [v] = await db()<{ game_id: number; lang: string }[]>`
+    select s.game_id, v.lang from variants v join strings s on s.id = v.string_id where v.id = ${id}`;
+  if (!v) fail(404, 'Вариант не найден');
+  return v!;
+}
+
 app.post('/variants/:id/vote', async (c) => {
   const user = await requireUser(c);
   const id = Number(c.req.param('id'));
+  const vs = await variantScope(id);
+  await requireStage(user, vs.game_id, vs.lang, 'vote');
   const res = await db()`insert into votes (variant_id, user_id) select ${id}, ${user.id} where exists (select 1 from variants where id = ${id}) on conflict do nothing`;
   if (!res.count) {
     const [exists] = await db()`select 1 from variants where id = ${id}`;
@@ -321,6 +363,8 @@ app.post('/variants/:id/vote', async (c) => {
 app.delete('/variants/:id/vote', async (c) => {
   const user = await requireUser(c);
   const id = Number(c.req.param('id'));
+  const vs = await variantScope(id);
+  await requireStage(user, vs.game_id, vs.lang, 'vote');
   await db()`delete from votes where variant_id = ${id} and user_id = ${user.id}`;
   return c.json(await voteCount(id, user.id));
 });
@@ -339,6 +383,7 @@ app.post('/strings/:id/approve', async (c) => {
   const { lang, variantId, text } = await body<{ lang: string; variantId?: number; text?: string }>(c);
   checkLang(s, lang);
   if (!(await isModerator(user, s.id, lang))) fail(403, 'Утверждать могут только модераторы');
+  await requireStage(user, s.id, lang, 'approve');
 
   let value: string;
   let vid: number | null = null;
@@ -369,6 +414,7 @@ app.delete('/strings/:id/approve', async (c) => {
   const s = await stringWithGame(Number(c.req.param('id')));
   const lang = checkLang(s, c.req.query('lang'));
   if (!(await isModerator(user, s.id, lang))) fail(403, 'Снимать утверждение могут только модераторы');
+  await requireStage(user, s.id, lang, 'approve');
   await db()`delete from approved where string_id = ${s.string_id} and lang = ${lang}`;
   await notifyRepo(s);
   return c.json({ ok: true });
@@ -777,3 +823,20 @@ async function handlePublishCallback(c: Context, st: PublishState) {
     return back({ error: (e as Error).message });
   }
 }
+
+
+// ---------- смена этапа перевода ----------
+
+/** Сменить этап для языка: модератор этого языка, управляющий игрой или администратор. */
+app.post('/games/:slug/status', async (c) => {
+  const user = await requireUser(c);
+  const g = await gameBySlug(c.req.param('slug'));
+  const { lang, status } = await body<{ lang: string; status: string }>(c);
+  checkLang(g, lang);
+  if (!STATUSES.includes(status as Status)) fail(400, 'Этап: open (групповой перевод), review (апрув) или done (готово)');
+  if (!(await isModerator(user, g.id, lang))) fail(403, 'Менять этап могут модераторы этого языка');
+  await db()`
+    insert into language_status (game_id, lang, status, updated_by) values (${g.id}, ${lang}, ${status}, ${user.id})
+    on conflict (game_id, lang) do update set status = excluded.status, updated_by = excluded.updated_by, updated_at = now()`;
+  return c.json({ ok: true, status, title: STATUS_TITLE[status as Status] });
+});

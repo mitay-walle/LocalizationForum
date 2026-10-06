@@ -13,7 +13,8 @@ const INSTRUCTIONS = `LocalizationForum — коллективный перев�
 - сохраняйте плейсхолдеры, теги и переводы строк из оригинала ({0}, {PAWN_label}, %d, <color=…>, \\n) — иначе вариант не примется;
 - учитывайте context строки (кто говорит, где строка в игре) и уже утверждённые переводы соседних строк для единообразия терминов;
 - ваши варианты публикуются от имени пользователя и помечаются на сайте значком «ИИ»; финальное решение принимают модераторы;
-- не предлагайте вариант, если уже есть хороший — лучше проголосуйте за него.`;
+- не предлагайте вариант, если уже есть хороший — лучше проголосуйте за него;
+- у каждого языка есть этап: «Групповой перевод» (open), «Апрув» (review — предлагать и голосовать могут только модераторы), «Готово» (done — изменения закрыты).`;
 
 type Call = (method: string, path: string, body?: unknown) => Promise<{ status: number; data: any }>;
 
@@ -47,7 +48,7 @@ function buildServer(call: Call, login: string) {
   tool(
     'get_game',
     'Игра',
-    'Сводка по игре: языки и статистика (утверждено / на голосовании / устарело / всего), можно ли мне управлять игрой.',
+    'Сводка по игре: языки и статистика (утверждено / на голосовании / устарело / всего), этап перевода каждого языка (status), можно ли мне управлять игрой.',
     { game: z.string().describe('slug игры') },
     async ({ game }) => guard('GET', `/api/games/${encodeURIComponent(game)}`),
     true,
@@ -75,6 +76,7 @@ function buildServer(call: Call, login: string) {
         pages: Math.ceil(d.total / d.pageSize),
         total: d.total,
         canModerate: d.canModerate,
+        stage: d.status, // open — групповой перевод, review — апрув (варианты/голоса только у модераторов), done — заморожен
         strings: d.strings.map((s: any) => ({
           id: s.id,
           file: s.file,
@@ -93,7 +95,7 @@ function buildServer(call: Call, login: string) {
   tool(
     'list_files',
     'Файлы игры',
-    'Файлы игры и прогресс перевода по каждому.',
+    'Файлы игры и прогресс перевода по каждому: approved — утверждено, voting — строк с вариантами без утверждения, total — всего.',
     { game: z.string(), lang: z.string() },
     async ({ game, lang }) => (await guard('GET', `/api/games/${encodeURIComponent(game)}/files?lang=${encodeURIComponent(lang)}`)).files,
     true,
@@ -150,6 +152,14 @@ function buildServer(call: Call, login: string) {
       if (!variant_id && !t) throw new Error('Укажите variant_id или text');
       return guard('POST', `/api/strings/${string_id}/approve`, { lang, variantId: variant_id, text: t });
     },
+  );
+
+  tool(
+    'set_stage',
+    'Сменить этап перевода',
+    'Только для модераторов языка: open — «Групповой перевод» (все предлагают и голосуют), review — «Апрув» (модераторы утверждают итог), done — «Готово» (перевод заморожен).',
+    { game: z.string(), lang: z.string(), stage: z.enum(['open', 'review', 'done']) },
+    async ({ game, lang, stage }) => guard('POST', `/api/games/${encodeURIComponent(game)}/status`, { lang, status: stage }),
   );
 
   return server;
