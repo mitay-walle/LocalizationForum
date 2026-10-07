@@ -865,6 +865,11 @@ app.post('/games/:slug/settings', async (c) => {
   // Сколько сохранённых оригиналов разобрано не тем форматом, что теперь задан в карте, — их пересчитает /reparse
   const parsed = await db()<{ path: string; format: string | null }[]>`select path, format from source_files where game_id = ${game.id}`;
   const reparse = parsed.filter((f) => (fileFormat({ format, format_map: formatMap }, f.path) ?? PASSTHROUGH) !== (f.format ?? format)).length;
+  // Карта поменялась для уже загруженных файлов — сразу пересобираем строки (утверждения сохраняются по файлу и ключу)
+  if (reparse && b.format_map !== undefined && (b as { reparse?: boolean }).reparse) {
+    const reparsed = await reparseGame(await gameBySlug(game.slug));
+    return c.json({ ok: true, format_map: formatMap, reparse: 0, reparsed });
+  }
   return c.json({ ok: true, format_map: formatMap, reparse });
 });
 
@@ -899,9 +904,12 @@ app.get('/games/:slug/source/files', async (c) => {
 });
 
 /** Скачать оригинал байт в байт (текст — в его исходной кодировке, с BOM). */
+/** Путь файла из запроса: ?file=… (параметр path занят переписыванием /api/:path* на Vercel). */
+const fileParam = (c: Context): string => c.req.query('file') ?? (c.req.queries('path') ?? []).filter((p) => !p.startsWith('games/')).pop() ?? '';
+
 app.get('/games/:slug/source/raw', async (c) => {
   const { game } = await requireManager(c);
-  const path = c.req.query('path') ?? '';
+  const path = fileParam(c);
   const [f] = await db()<{ content: string; encoding: string; data: Buffer | null }[]>`
     select content, encoding, data from source_files where game_id = ${game.id} and path = ${path}`;
   if (!f) fail(404, 'Файл не найден');
@@ -926,7 +934,7 @@ const cleanPaths = (v: unknown): string[] => {
 /** Удалить один оригинал: DELETE /games/:slug/source?path=… */
 app.delete('/games/:slug/source', async (c) => {
   const { user, game } = await requireManager(c);
-  const path = c.req.query('path');
+  const path = fileParam(c) || undefined;
   if (!path) fail(400, 'Укажите path');
   return c.json(await deleteSource(game, { paths: [path!] }, user.id));
 });
@@ -949,17 +957,21 @@ app.post('/games/:slug/source/restore', async (c) => {
   return c.json(await restoreSource(game, cleanPaths(b.paths)));
 });
 
-/** Пересобрать строки из сохранённых оригиналов по текущему описанию формата (после правки формата). */
-app.post('/games/:slug/reparse', async (c) => {
-  const { game } = await requireManager(c);
-  // Формат каждого файла — по текущей карте форматов; файлы «как есть» передаются своими байтами
+/** Пересобрать строки из сохранённых оригиналов по текущей карте форматов (файлы «как есть» передаются своими байтами). */
+async function reparseGame(game: Game) {
   const rows = await db()<{ path: string; content: string; encoding: string; data: Buffer | null }[]>`
     select path, content, encoding, data from source_files where game_id = ${game.id}`;
   if (!rows.length) fail(422, 'Оригиналы не сохранены — загрузите исходные файлы заново');
   const files: InFile[] = rows.map((r) => ({ path: r.path, content: r.content, encoding: r.encoding, data: r.data ? new Uint8Array(r.data) : null }));
   const res = await importSource(game, files);
   const removed = (await finalizeSource(game, files.map((f) => f.path))).removed;
-  return c.json({ ...res, removed: res.removed + removed });
+  return { ...res, removed: res.removed + removed };
+}
+
+/** Пересобрать строки из сохранённых оригиналов по текущему описанию формата (после правки формата). */
+app.post('/games/:slug/reparse', async (c) => {
+  const { game } = await requireManager(c);
+  return c.json(await reparseGame(game));
 });
 
 /** Загрузка готового перевода с сайта: заполняет утверждённые строки. */
