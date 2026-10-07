@@ -4,6 +4,8 @@
 
 **Сайт: https://localization-forum.vercel.app/**
 
+Если сайт недоступен, откройте зеркало только для чтения: **https://mitay-walle.github.io/LocalizationForum/** — там сохранённая копия переводов (обновляется раз в сутки); основной сайт и сам переключается на неё, когда сервер не отвечает.
+
 *English version below.*
 
 ## Как участвовать
@@ -49,6 +51,10 @@
 4. В **«Настройках игры»** загрузите оригинальные файлы (по одному или целой папкой). Строки появятся на сайте, и можно звать переводчиков.
 5. Там же — модераторы по языкам, правила проверки, импорт уже готового перевода и кнопка **«Опубликовать в GitHub»**: она выкладывает перевод в репозиторий игры и выпускает релизы для каждого языка.
 
+### Как выпустить перевод одного языка
+
+Обновился, например, только украинский перевод? Откройте страницу игры и в строке языка нажмите **«Опубликовать»** (или в «Настройках игры» → «Опубликовать в GitHub» отметьте нужные языки галочками). Укажите версию — появится релиз с тегом вида `uk-1.1`. В репозиторий запишется только папка отмеченного языка (и общие `source/`, `game.json`, README): **остальные языки в репозитории не изменятся**. Если релиз с такой версией у какого-то языка уже есть, остальные всё равно выпустятся, а сайт покажет итог по каждому языку.
+
 ### Как добавить язык перевода
 
 На странице игры в блоке «Языки перевода» выберите язык из списка (или введите код вроде `pt-BR`) и нажмите «Добавить» — так можно добавить сколько угодно языков. Убрать язык — кнопка × в его строке; если по нему уже есть утверждённые переводы, сайт попросит подтвердить, а сами переводы сохранятся (скрытыми) и вернутся, если язык добавить снова. То же самое есть в «Настройках игры» и в форме новой игры. Это могут делать управляющие игрой.
@@ -61,12 +67,12 @@
 
 ## English
 
-**LocalizationForum** is a free, community-driven game translation site in the spirit of Zone of Games: people propose translations for each line, vote for the best ones, and moderators approve the final text. Site: **https://localization-forum.vercel.app/** (switch the interface language in the header).
+**LocalizationForum** is a free, community-driven game translation site in the spirit of Zone of Games: people propose translations for each line, vote for the best ones, and moderators approve the final text. Site: **https://localization-forum.vercel.app/** (switch the interface language in the header). If it is down, a read-only mirror updated daily lives at **https://mitay-walle.github.io/LocalizationForum/**.
 
 - **Take part:** sign in with GitHub, pick a game and a language, propose your variant or vote ▲ for the best one (one vote per line — voting for another variant moves your vote).
 - **Stages:** *Group translation* (everyone proposes and votes) → *Review* (moderators approve) → *Done* (closed).
 - **Get the translation:** open the game's GitHub **Releases**, take the newest release for your language (tag `<language>-<version>`, e.g. `ru-1.0`), download the zip from **Assets** and unpack it over the game folder. Don't download the repository source.
-- **Add your game:** *+ New game* → choose or describe the file format → upload the original files in *Game settings* → *Publish to GitHub* when ready. Add more translation languages on the game page (*+ Add language*).
+- **Add your game:** *+ New game* → choose or describe the file format → upload the original files in *Game settings* → *Publish to GitHub* when ready — tick only the languages you want to release; the others in the repository stay untouched. Add more translation languages on the game page (*+ Add language*).
 - **Rules:** up to 3 own variants per line (30 in total per line) and 500 per hour; language moderators are exempt. Spammers can be banned per game by its managers or site-wide by admins — banned users can only read.
 - **AI assistants:** connect Claude or another assistant via MCP (⚙ → Tokens and MCP connection); its suggestions are marked “AI”, and humans still approve.
 

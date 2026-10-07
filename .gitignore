@@ -2,3 +2,6 @@ node_modules/
 .env
 .env.local
 .vercel/
+
+# снимок для зеркала на GitHub Pages собирается в workflow
+site/data/
