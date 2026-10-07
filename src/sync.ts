@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { db } from './db.js';
-import { PASSTHROUGH, extOf, fileFormat, mappedFormat, resolveFormat, suggestFormat, type Format, type OutString } from './formats/index.js';
+import { PASSTHROUGH, extOf, fileFormat, formatsForExtension, mappedFormat, resolveFormat, suggestFormat, type Format, type OutString } from './formats/index.js';
 import { decodeBytes, detectEncoding, fixXmlDeclaration, isEncoding, looksBinary } from './encoding.js';
 
 export interface InFile {
@@ -107,6 +107,12 @@ async function prepareFiles(game: Game, files: InFile[]) {
       const slug = samples.length ? await suggestFormat(ext, samples, g?.format || null) : null;
       map[ext] = added[ext] = slug ?? PASSTHROUGH;
     }
+  }
+
+  // Расширение помечено «не переводить», хотя есть формат, объявленный для него, — подсказать (сами не меняем: это мог быть выбор)
+  for (const ext of new Set(items.filter((it) => it.text !== null && map[it.ext] === PASSTHROUGH && !(it.ext in added)).map((it) => it.ext))) {
+    const fits = await formatsForExtension(ext);
+    if (fits.length) errors.push(`Файлы ${ext} копируются как есть («не переводить»), но для ${ext} есть формат: ${fits.join(', ')} — выберите его в настройках игры («Форматы файлов»)`);
   }
 
   const out: Prepared[] = [];
