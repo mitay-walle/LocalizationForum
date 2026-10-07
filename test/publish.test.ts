@@ -135,7 +135,63 @@ describe.skipIf(!url)('publish to github', async () => {
     expect(files['README.md']).toContain('https://github.com/mitay-walle/localization_gunpoint_ru/releases/latest');
     expect(repo.releases[0].assets[0]).toMatchObject({ name: 'gp-ru-1.0.zip', head: 'PK' });
 
-    await expect(publishGame(await game(), 'tok', { site: 'http://site.test/', version: '1.0' })).rejects.toThrow(/уже существует/);
+    // тег уже есть — публикация не падает, итог по языку: exists
+    const dup = await publishGame(await game(), 'tok', { site: 'http://site.test/', version: '1.0' });
+    expect(dup.releases).toEqual([]);
+    expect(dup.langs).toEqual([{ lang: 'ru', status: 'exists', tag: 'ru-1.0', error: expect.stringMatching(/уже существует/) }]);
+  });
+
+  it('publishes only selected languages: other language folders stay untouched; per-language release results', async () => {
+    globalThis.fetch = realFetch;
+    expect((await req('/api/games/gp/settings', owner, 'POST', { languages: ['ru', 'uk'] })).status).toBe(200);
+    const strs = await (await req('/api/games/gp/strings?lang=uk', owner)).json();
+    const who = strs.strings.find((s: any) => s.key === 'L2');
+    expect((await req(`/api/strings/${who.id}/approve`, owner, 'POST', { lang: 'uk', text: 'Хто ти?' })).status).toBe(200);
+    globalThis.fetch = fake as any;
+
+    // в репо папку ru правили вручную — публикация uk не должна её тронуть
+    const repo = repos.get('mitay-walle/localization_gunpoint_ru');
+    const head = repo.commits[repo.commit].tree;
+    repo.trees[head] = { ...repo.trees[head], 'ru/Scripts/Intro.gpc': 'HAND-EDITED', 'ru/extra.txt': 'keep me' };
+
+    const r = await publishGame(await game(), 'tok', { site: 'http://site.test/', version: '2.0', langs: ['uk'] });
+    expect(r.releases).toEqual(['uk-2.0']);
+    expect(r.langs).toEqual([{ lang: 'uk', status: 'released', tag: 'uk-2.0' }]);
+    const files = repo.trees[repo.commits[repo.commit].tree];
+    expect(files['uk/Scripts/Intro.gpc']).toContain('Хто ти?');
+    expect(files['ru/Scripts/Intro.gpc']).toBe('HAND-EDITED');
+    expect(files['ru/extra.txt']).toBe('keep me');
+    expect(JSON.parse(files['game.json']).languages).toEqual(['ru', 'uk']);
+    expect(repo.commits[repo.commit].message).toContain('uk');
+    expect(repo.releases.map((x: any) => x.tag)).toEqual(['ru-1.0', 'uk-2.0']);
+
+    // оба языка, у uk тег 2.0 уже есть: ru выпускается, uk — exists, публикация не падает
+    const both = await publishGame(await game(), 'tok', { site: 'http://site.test/', version: '2.0', langs: ['ru', 'uk'] });
+    expect(both.releases).toEqual(['ru-2.0']);
+    expect(both.langs).toEqual([
+      { lang: 'ru', status: 'released', tag: 'ru-2.0' },
+      { lang: 'uk', status: 'exists', tag: 'uk-2.0', error: expect.stringMatching(/уже существует/) },
+    ]);
+    expect(repo.trees[repo.commits[repo.commit].tree]['ru/Scripts/Intro.gpc']).toContain('Ты кто?');
+
+    // без версии — только коммит, по языкам committed; неизвестный/пустой список — ошибка
+    expect((await publishGame(await game(), 'tok', { site: 'http://site.test/', langs: ['uk'] })).langs).toEqual([{ lang: 'uk', status: 'committed' }]);
+    await expect(publishGame(await game(), 'tok', { site: 'http://site.test/', langs: [] })).rejects.toThrow(/хотя бы один/);
+    await expect(publishGame(await game(), 'tok', { site: 'http://site.test/', langs: ['de'] })).rejects.toThrow(/de/);
+  });
+
+  it('publish/start validates langs and carries them in the OAuth state', async () => {
+    globalThis.fetch = realFetch;
+    process.env.GITHUB_CLIENT_ID = 'cid';
+    const start = (b: object) => req('/api/games/gp/publish/start', owner, 'POST', { return: 'http://site.test/', ...b });
+    expect((await start({})).status).toBe(400);
+    expect((await start({ langs: [] })).status).toBe(400);
+    expect((await start({ langs: ['xx'] })).status).toBe(400);
+    const ok = await start({ langs: ['uk'], version: '3.0' });
+    expect(ok.status).toBe(200);
+    const state = new URL((await ok.json()).url).searchParams.get('state')!;
+    expect(JSON.parse(Buffer.from(state.split('.')[1], 'base64url').toString())).toMatchObject({ typ: 'publish', langs: ['uk'], ver: '3.0' });
+    globalThis.fetch = fake as any;
   });
 
   it('refuses to create a repo under another owner', async () => {
