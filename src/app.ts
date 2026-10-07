@@ -3,7 +3,6 @@ import { cors } from 'hono/cors';
 import { HTTPException } from 'hono/http-exception';
 import { allowedReturn, currentUser, isModerator, signSession, signState, upsertUser, verifyState, type User } from './auth.js';
 import { db } from './db.js';
-import { publishGame } from './publish.js';
 import { SignJWT, jwtVerify } from 'jose';
 import { env, list } from './env.js';
 import { isBuiltin, listFormats, resolveFormat, validateLinesConfig, makeLinesFormat } from './formats/index.js';
@@ -14,6 +13,30 @@ import { variantLimits } from './limits.js';
 const PAGE = 50;
 
 export const app = new Hono().basePath('/api');
+
+// ---------- кэш CDN Vercel для анонимного чтения ----------
+// CDN Vercel не кэширует запросы с Authorization и ответы с Vary: Cookie, а s-maxage/stale-while-revalidate
+// срезает перед отправкой в браузер — то есть кэширует только CDN. Публичный кэш ставим лишь анонимным
+// запросам (без Authorization и без cookie): у вошедших в ответе свои поля (mine, canModerate, ban…) — им private.
+// Vary: Origin — чтобы закэшированный ответ не отдал другому сайту чужой Access-Control-Allow-Origin.
+// Подключается раньше CORS, чтобы видеть его заголовки (и не дублировать Vary).
+const PUBLIC_READS: [RegExp, string][] = [
+  [/^\/api\/games\/[^/]+\/export$/, 'public, s-maxage=300, stale-while-revalidate=3600'],
+  [/^\/api\/(games(\/[^/]+(\/(files|strings|credits))?)?|formats(\/[^/]+)?)$/, 'public, s-maxage=60, stale-while-revalidate=600'],
+];
+app.use('*', async (c, next) => {
+  await next();
+  if (c.req.method !== 'GET') return;
+  const rule = PUBLIC_READS.find(([re]) => re.test(c.req.path));
+  if (!rule) return;
+  if (!c.req.header('authorization') && !c.req.header('cookie') && c.res.status === 200) {
+    c.header('Cache-Control', rule[1]);
+    const vary = c.res.headers.get('Vary');
+    if (!vary?.split(',').some((v) => v.trim().toLowerCase() === 'origin')) c.header('Vary', vary ? `${vary}, Origin` : 'Origin');
+  } else {
+    c.header('Cache-Control', 'private, no-store');
+  }
+});
 
 app.use(
   '*',
@@ -487,13 +510,18 @@ app.delete('/strings/:id/approve', async (c) => {
   return c.json({ ok: true });
 });
 
-/** Дёрнуть Action в репо игры, чтобы он забрал свежий перевод. Не чаще раза в 2 минуты; остальное подберёт расписание. */
+/**
+ * Дёрнуть Action в репо игры, чтобы он забрал свежий перевод. Не чаще раза в 10 минут на игру.
+ * Склейка: workflow, запущенный по repository_dispatch, сначала ждёт 10 минут и только потом выгружает —
+ * поэтому утверждения, пропущенные троттлингом (они в пределах 10 минут после отправленного dispatch), попадут в тот же запуск.
+ */
+export const DISPATCH_INTERVAL_MIN = 10;
 async function notifyRepo(g: Game) {
   const token = process.env.GITHUB_DISPATCH_TOKEN;
   if (!token || !g.repo) return;
   const due = await db()`
     update games set dispatched_at = now()
-    where id = ${g.id} and (dispatched_at is null or dispatched_at < now() - interval '2 minutes') returning id`;
+    where id = ${g.id} and (dispatched_at is null or dispatched_at < now() - ${DISPATCH_INTERVAL_MIN} * interval '1 minute') returning id`;
   if (!due.length) return;
   try {
     await fetch(`https://api.github.com/repos/${g.repo}/dispatches`, {
@@ -1042,6 +1070,7 @@ async function handlePublishCallback(c: Context, st: PublishState) {
   if (!tok.access_token) return back({ error: `GitHub: ${tok.error_description ?? 'не удалось получить доступ'}` });
   try {
     const site = new URL(st.ret);
+    const { publishGame } = await import('./publish.js'); // модуль публикации (zip, GitHub API) грузим только когда нужен
     const result = await publishGame(g, tok.access_token, { version: st.ver || undefined, site: site.origin + site.pathname });
     return back(result);
   } catch (e) {

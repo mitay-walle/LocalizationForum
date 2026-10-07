@@ -2,7 +2,6 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { app } from './app.js';
-import { mountMcp } from './mcp.js';
 import { authServerMetadata, oauth, protectedResourceMetadata } from './oauth.js';
 
 app.route('/', oauth); // /api/oauth/*, /api/tokens — с общими CORS и обработкой ошибок
@@ -14,5 +13,6 @@ root.get('/.well-known/oauth-protected-resource', (c) => c.json(protectedResourc
 root.get('/.well-known/oauth-protected-resource/*', (c) => c.json(protectedResourceMetadata(c)));
 root.get('/.well-known/oauth-authorization-server', (c) => c.json(authServerMetadata(c)));
 root.get('/.well-known/oauth-authorization-server/*', (c) => c.json(authServerMetadata(c)));
-mountMcp(root, app);
+// MCP грузим лениво: SDK и zod нужны только клиентам MCP, а не каждому холодному старту функции
+root.all('/api/mcp', async (c) => (await import('./mcp.js')).mcpHandler(c, app));
 root.route('/', app);

@@ -167,38 +167,38 @@ function buildServer(call: Call, login: string) {
   return server;
 }
 
-/** Обработчик /api/mcp. Токен: Authorization: Bearer lf_… или ?token=lf_… (для клиентов без заголовков). */
-export function mountMcp(root: Hono, app: Hono) {
-  const handler = async (c: Context) => {
-    const header = c.req.header('authorization');
-    const token = header?.startsWith('Bearer ') ? header.slice(7) : c.req.query('token') ?? '';
-    const user = token.startsWith('lf_') ? await userByApiToken(token) : null;
-    if (!user) {
-      return c.json(
-        { jsonrpc: '2.0', error: { code: -32001, message: 'Нужна авторизация: подключите коннектор через OAuth или передайте токен с сайта (страница «Токены»).' }, id: null },
-        401,
-        { 'WWW-Authenticate': `Bearer resource_metadata="${origin(c)}/.well-known/oauth-protected-resource"` },
-      );
+/**
+ * Обработчик /api/mcp. Токен: Authorization: Bearer lf_… или ?token=lf_… (для клиентов без заголовков).
+ * Модуль подключается динамически из server.ts — MCP SDK и zod не разбираются при холодном старте обычного API.
+ */
+export async function mcpHandler(c: Context, app: Hono) {
+  const header = c.req.header('authorization');
+  const token = header?.startsWith('Bearer ') ? header.slice(7) : c.req.query('token') ?? '';
+  const user = token.startsWith('lf_') ? await userByApiToken(token) : null;
+  if (!user) {
+    return c.json(
+      { jsonrpc: '2.0', error: { code: -32001, message: 'Нужна авторизация: подключите коннектор через OAuth или передайте токен с сайта (страница «Токены»).' }, id: null },
+      401,
+      { 'WWW-Authenticate': `Bearer resource_metadata="${origin(c)}/.well-known/oauth-protected-resource"` },
+    );
+  }
+  const call: Call = async (method, path, body) => {
+    const res = await app.request(path, {
+      method,
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'x-client': 'mcp' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const raw = await res.text();
+    let data: any = null;
+    try {
+      data = raw ? JSON.parse(raw) : null;
+    } catch {
+      data = { error: raw.slice(0, 200) };
     }
-    const call: Call = async (method, path, body) => {
-      const res = await app.request(path, {
-        method,
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'x-client': 'mcp' },
-        body: body === undefined ? undefined : JSON.stringify(body),
-      });
-      const raw = await res.text();
-      let data: any = null;
-      try {
-        data = raw ? JSON.parse(raw) : null;
-      } catch {
-        data = { error: raw.slice(0, 200) };
-      }
-      return { status: res.status, data };
-    };
-    const server = buildServer(call, user.login);
-    const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
-    await server.connect(transport);
-    return transport.handleRequest(c.req.raw);
+    return { status: res.status, data };
   };
-  root.all('/api/mcp', handler);
+  const server = buildServer(call, user.login);
+  const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+  await server.connect(transport);
+  return transport.handleRequest(c.req.raw);
 }
