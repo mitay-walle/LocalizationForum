@@ -213,6 +213,33 @@ describe.skipIf(!url)('mcp + oauth', async () => {
     expect((await callTool(carl, 'remove_language', { game: 'mcp-game', lang: 'uk' })).data).toEqual({ languages: ['ru'] });
   });
 
+  it('mcp: upload_translation_files — propose (ai variants, unchanged skipped, base64) and approve (managers only)', async () => {
+    const mk = async (session: string) => (await json(await req('/api/tokens', { method: 'POST', headers: { Authorization: `Bearer ${session}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'mcp' }) }))).body.token;
+    const owner = await mk(await login('tina'));
+    const guest = await mk(await login('gus'));
+    expect((await callTool(owner, 'create_game', { slug: 'tr-game', title: 'TR', source_lang: 'en', languages: ['ru'] })).isError).toBe(false);
+    await callTool(owner, 'upload_source_files', { game: 'tr-game', files: [{ path: 'en.json', content: JSON.stringify({ a: 'Hello', b: 'Bye', c: 'Name' }) }] });
+    const tools = (await rpc(owner, 'tools/list')).body.result.tools;
+    expect(tools.find((t: any) => t.name === 'upload_translation_files')).toBeTruthy();
+
+    // гость: как варианты ИИ; c совпадает с оригиналом — пропущена; файл байтами
+    const ru = Buffer.from(JSON.stringify({ a: 'Привет', b: 'Пока', c: 'Name' }), 'utf8').toString('base64');
+    const p = await callTool(guest, 'upload_translation_files', { game: 'tr-game', lang: 'ru', files: [{ path: 'en.json', base64: ru }] });
+    expect(p.data).toMatchObject({ proposed: 2, unchanged: 1, rejected: 0, limited: 0 });
+    const strs = (await callTool(guest, 'find_strings', { game: 'tr-game', lang: 'ru', filter: 'voting' })).data.strings;
+    expect(strs.length).toBe(2);
+    expect(strs.every((s: any) => s.variants[0].ai === true)).toBe(true);
+    // повтор — дубликаты не плодятся
+    expect((await callTool(guest, 'upload_translation_files', { game: 'tr-game', lang: 'ru', files: [{ path: 'en.json', base64: ru }] })).data).toMatchObject({ proposed: 0, duplicates: 2 });
+
+    // утвердить сразу может только управляющий
+    const denied = await callTool(guest, 'upload_translation_files', { game: 'tr-game', lang: 'ru', mode: 'approve', files: [{ path: 'en.json', content: '{"a":"Х"}' }] });
+    expect(denied.isError).toBe(true);
+    const ap = await callTool(owner, 'upload_translation_files', { game: 'tr-game', lang: 'ru', mode: 'approve', files: [{ path: 'en.json', content: JSON.stringify({ a: 'Привет', b: 'Bye' }) }] });
+    expect(ap.data).toMatchObject({ imported: 1, unchanged: 1 });
+    expect((await callTool(owner, 'get_game', { game: 'tr-game' })).data.stats.find((x: any) => x.lang === 'ru')).toMatchObject({ approved: 1, total: 3 });
+  });
+
   it('token via ?token= query and revocation', async () => {
     const r = await req(`/api/mcp?token=${apiToken}`, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }) });
     expect(r.status).toBe(200);

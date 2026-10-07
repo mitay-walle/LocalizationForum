@@ -219,7 +219,7 @@ describe.skipIf(!url)('api', async () => {
   it('imports existing translation without overwriting approved', async () => {
     const ru = [{ path: 'Core/Keyed/Alerts.xml', content: '<LanguageData><BreakRiskMinor>Риск срыва</BreakRiskMinor><Starving>ЧУЖОЕ</Starving><Nope>x</Nope></LanguageData>' }];
     const r = await call('POST', '/admin/import', { sync: true, body: { game, lang: 'ru', files: ru } });
-    expect(r.json).toEqual({ imported: 1, skipped: 1, unknown: 1, errors: [] });
+    expect(r.json).toEqual({ imported: 1, skipped: 1, unknown: 1, unchanged: 0, errors: [] });
   });
 
   it('auth: login redirect is restricted to allowed origins', async () => {
