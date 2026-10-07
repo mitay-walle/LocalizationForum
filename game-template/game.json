@@ -2,6 +2,7 @@
   "slug": "my-game",
   "title": "My Game",
   "format": "rimworld",
+  "format_map": { ".xml": "rimworld" },
   "sourceLang": "en",
   "languages": ["ru"]
 }
