@@ -1,12 +1,13 @@
 # Забирает утверждённые переводы с форума и коммитит их в папки языков.
-# Запускается сразу после утверждения (если на форуме задан GITHUB_DISPATCH_TOKEN), раз в час и вручную.
+# Запуски: после утверждения на форуме (repository_dispatch, если на форуме задан GITHUB_DISPATCH_TOKEN),
+# раз в сутки на всякий случай и вручную. Почасового расписания нет: каждый запрос будит бесплатную базу форума.
 name: Sync translations
 
 on:
   repository_dispatch:
     types: [translations-updated]
   schedule:
-    - cron: '17 * * * *'
+    - cron: '41 3 * * *'
   workflow_dispatch:
 
 permissions:
@@ -26,6 +27,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # Форум шлёт dispatch не чаще раза в 10 минут на игру. Ждём эти 10 минут, чтобы забрать и все
+      # утверждения, сделанные после него (для них форум отдельный dispatch уже не пошлёт).
+      - name: Подождать, пока модераторы закончат пачку утверждений
+        if: github.event_name == 'repository_dispatch'
+        run: sleep 600
       - run: node scripts/forum.mjs export
       - name: Commit
         run: |
