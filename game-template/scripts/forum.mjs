@@ -6,7 +6,12 @@
 //   node scripts/forum.mjs export                          — забрать утверждённые переводы во все папки языков
 //   node scripts/forum.mjs credits ru                      — титры для заметок к релизу (Markdown)
 //
-// Переменные окружения: FORUM_API_URL (например https://xxx.vercel.app), FORUM_SYNC_TOKEN.
+// Переменные окружения: FORUM_API_URL (например https://xxx.vercel.app), FORUM_SYNC_TOKEN,
+// FORUM_SOURCE_ENCODING — кодировка оригиналов, если это не UTF-8 и без BOM (по умолчанию windows-1252).
+//
+// Формат каждого файла форум выбирает по расширению: game.json → format_map ({".xml": "rimworld", ".png": "-"});
+// расширений, которых нет в карте, форум подбирает сам. «-» — файл не переводится и копируется в перевод как есть
+// (картинки и прочие двоичные файлы уходят на форум байтами). Поле format — формат по умолчанию для старых game.json.
 
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, relative } from 'node:path';
@@ -51,10 +56,41 @@ async function walk(dir) {
   return out;
 }
 
+// Кодировка файла: BOM UTF-8/UTF-16, корректный UTF-8 — иначе FORUM_SOURCE_ENCODING или windows-1252 (как на сайте)
+function detectEncoding(b) {
+  if (b[0] === 0xef && b[1] === 0xbb && b[2] === 0xbf) return 'utf-8-bom';
+  if (b[0] === 0xff && b[1] === 0xfe) return 'utf-16le-bom';
+  if (b[0] === 0xfe && b[1] === 0xff) return 'utf-16be-bom';
+  try {
+    new TextDecoder('utf-8', { fatal: true }).decode(b);
+    return 'utf-8';
+  } catch {
+    return process.env.FORUM_SOURCE_ENCODING || 'windows-1252';
+  }
+}
+const DECODER = { 'utf-8-bom': 'utf-8', 'utf-16le-bom': 'utf-16le', 'utf-16be-bom': 'utf-16be' };
+const RAW_MAX_BYTES = 3_000_000; // файл «как есть» уходит одним запросом в base64
+
+// Двоичный файл (картинка, звук…): нулевой байт в первых 8 КБ, кроме UTF-16 с BOM — как на сайте
+function looksBinary(b) {
+  if ((b[0] === 0xff && b[1] === 0xfe) || (b[0] === 0xfe && b[1] === 0xff)) return false;
+  for (let i = 0; i < Math.min(b.length, 8192); i++) if (b[i] === 0) return true;
+  return false;
+}
+
 async function readTree(dir) {
   const files = [];
   for (const p of await walk(dir)) {
-    files.push({ path: relative(dir, p).replace(/\\/g, '/'), content: await readFile(p, 'utf8') });
+    const bytes = await readFile(p);
+    const path = relative(dir, p).replace(/\\/g, '/');
+    if (looksBinary(bytes)) {
+      if (bytes.length > RAW_MAX_BYTES) { console.warn(`⚠ ${path}: больше ${RAW_MAX_BYTES / 1e6} МБ — пропущен`); continue; }
+      files.push({ path, content: '', data: bytes.toString('base64') });
+      continue;
+    }
+    const encoding = detectEncoding(bytes);
+    const content = new TextDecoder(DECODER[encoding] || encoding).decode(bytes); // переводы строк — как в файле
+    files.push({ path, content, encoding });
   }
   return files;
 }
@@ -63,7 +99,7 @@ function batches(files) {
   const out = [[]];
   let size = 0;
   for (const f of files) {
-    const s = Buffer.byteLength(f.content) + f.path.length + 32;
+    const s = (f.data ? f.data.length : Buffer.byteLength(f.content)) + f.path.length + 32;
     if (size + s > BATCH_BYTES && out.at(-1).length) { out.push([]); size = 0; }
     out.at(-1).push(f);
     size += s;
@@ -84,18 +120,22 @@ const [cmd, arg, flag] = process.argv.slice(2);
 if (cmd === 'import') {
   const files = await readTree(join(root, 'source'));
   const rules = await loadRules();
-  const total = { added: 0, changed: 0, removed: 0, unchanged: 0 };
+  const total = { added: 0, changed: 0, removed: 0, unchanged: 0, raw: 0 };
+  const formats = {};
   for (const batch of batches(files)) {
     const r = await call('POST', '/admin/import', { game, rules, files: batch });
-    for (const k of Object.keys(total)) total[k] += r[k];
+    for (const k of Object.keys(total)) total[k] += r[k] || 0;
     for (const e of r.errors) console.warn('⚠', e);
+    Object.assign(formats, r.formats || {});
   }
+  for (const [ext, f] of Object.entries(formats))
+    console.log(`Новое расширение ${ext} → ${f === '-' ? 'не переводится, копируется как есть' : f} (поменять — format_map в game.json или настройки игры на форуме)`);
   const fin = await call('POST', '/admin/import/finish', { slug: game.slug, paths: files.map((f) => f.path) });
   total.removed += fin.removed;
-  console.log(`Исходники: новых ${total.added}, изменено ${total.changed}, удалено ${total.removed}, без изменений ${total.unchanged}`);
+  console.log(`Исходники: новых ${total.added}, изменено ${total.changed}, удалено ${total.removed}, без изменений ${total.unchanged}, файлов как есть ${total.raw}`);
 } else if (cmd === 'import-translation') {
   if (!game.languages.includes(arg)) fail(`Язык ${arg} не указан в game.json`);
-  const files = await readTree(join(root, arg));
+  const files = (await readTree(join(root, arg))).filter((f) => !f.data); // картинки и т. п. — не перевод
   let imported = 0, skipped = 0, unknown = 0;
   for (const batch of batches(files)) {
     const r = await call('POST', '/admin/import', { game, rules: await loadRules(), files: batch, lang: arg, overwrite: flag === '--overwrite' });
@@ -104,11 +144,12 @@ if (cmd === 'import') {
   console.log(`Перевод ${arg}: загружено ${imported}, уже были утверждены ${skipped}, нет в исходниках ${unknown}`);
 } else if (cmd === 'export') {
   for (const lang of game.languages) {
-    const r = await call('GET', `/games/${game.slug}/export?lang=${lang}`);
+    // binary=1: форум отдаёт готовые байты в нужной кодировке (с BOM, если он есть)
+    const r = await call('GET', `/games/${game.slug}/export?lang=${lang}&binary=1`);
     for (const f of r.files) {
       const p = join(root, lang, f.path);
       await mkdir(dirname(p), { recursive: true });
-      await writeFile(p, f.content);
+      await writeFile(p, Buffer.from(f.data, 'base64'));
     }
     console.log(`${lang}: ${r.translated}/${r.total} строк, файлов ${r.files.length}`);
   }
