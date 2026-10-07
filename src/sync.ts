@@ -300,29 +300,56 @@ export async function restoreSource(game: Game, paths: string[]) {
  * Импорт готового перевода (например, существующего RimWorld-ru): заполняет утверждённые
  * переводы там, где их ещё нет. overwrite=true — перезаписать и существующие.
  */
-export async function importTranslation(game: Game, lang: string, files: InFile[], overwrite = false) {
+/** Строка перевода, сопоставленная со строкой игры по файлу и ключу. */
+export interface MatchedTranslation {
+  string_id: number;
+  file: string;
+  key: string;
+  source: string;
+  source_hash: string;
+  text: string;
+}
+
+/**
+ * Разобрать файлы перевода и сопоставить строки с оригиналом (по файлу и ключу).
+ * Файл может прийти текстом (content) или байтами (data, base64) — тогда кодировка берётся из encoding или определяется.
+ * Строки, совпадающие с оригиналом, по умолчанию пропускаются (это непереведённые места, а не перевод).
+ */
+export async function matchTranslation(game: Game, lang: string, files: InFile[], opts: { keepUnchanged?: boolean } = {}) {
   // формат каждого файла перевода — тот, которым разобран одноимённый оригинал (иначе — по карте игры)
   const src = new Map((await db()<{ path: string; format: string | null }[]>`select path, format from source_files where game_id = ${game.id}`).map((r) => [r.path, r.format]));
   const [g] = await db()<{ format: string; format_map: Record<string, string> }[]>`select format, format_map from games where id = ${game.id}`;
-  const prepared: Prepared[] = files
-    .filter((f) => f.data == null)
-    .map((f) => {
-      const path = norm(f.path);
-      return { path, format: src.get(path) ?? (g ? fileFormat(g, path) : undefined) ?? PASSTHROUGH, content: f.content, encoding: 'utf-8', data: null };
-    });
+  const prepared: Prepared[] = files.map((f) => {
+    const path = norm(f.path);
+    let content = f.content ?? '';
+    if (f.data != null) {
+      const bytes = typeof f.data === 'string' ? new Uint8Array(Buffer.from(f.data, 'base64')) : f.data;
+      content = decodeBytes(bytes, isEncoding(f.encoding) ? f.encoding : detectEncoding(bytes));
+    }
+    return { path, format: src.get(path) ?? (g ? fileFormat(g, path) : undefined) ?? PASSTHROUGH, content, encoding: 'utf-8', data: null };
+  });
   const { parsed, errors } = await parsePrepared(prepared);
-  const sql = db();
-  const strings = await sql<{ id: number; file: string; key: string; source: string; source_hash: string }[]>`
+  const strings = await db()<{ id: number; file: string; key: string; source: string; source_hash: string }[]>`
     select id, file, key, source, source_hash from strings where game_id = ${game.id} and not removed`;
   const byKey = new Map(strings.map((s) => [`${s.file}\u0000${s.key}`, s]));
-  const rows: { string_id: number; lang: string; text: string; source_hash: string }[] = [];
+  const rows: MatchedTranslation[] = [];
   let unknown = 0;
+  let unchanged = 0;
   for (const p of parsed) {
     const s = byKey.get(`${p.file}\u0000${p.key}`);
     if (!s) { unknown++; continue; }
     if (p.source === 'TODO' || !p.source.trim()) continue;
-    rows.push({ string_id: s.id, lang, text: p.source, source_hash: s.source_hash });
+    if (!opts.keepUnchanged && p.source === s.source) { unchanged++; continue; }
+    rows.push({ string_id: s.id, file: s.file, key: s.key, source: s.source, source_hash: s.source_hash, text: p.source });
   }
+  return { rows, unknown, unchanged, errors };
+}
+
+/** Импорт готового перевода сразу утверждённым (для управляющих игрой). overwrite — заменить уже утверждённое. */
+export async function importTranslation(game: Game, lang: string, files: InFile[], overwrite = false, opts: { keepUnchanged?: boolean } = {}) {
+  const { rows: matched, unknown, unchanged, errors } = await matchTranslation(game, lang, files, opts);
+  const sql = db();
+  const rows = matched.map((r) => ({ string_id: r.string_id, lang, text: r.text, source_hash: r.source_hash }));
   let imported = 0;
   for (let i = 0; i < rows.length; i += 1000) {
     const batch = rows.slice(i, i + 1000);
@@ -334,7 +361,7 @@ export async function importTranslation(game: Game, lang: string, files: InFile[
           on conflict (string_id, lang) do nothing`;
     imported += res.count;
   }
-  return { imported, skipped: rows.length - imported, unknown, errors };
+  return { imported, skipped: rows.length - imported, unknown, unchanged, errors };
 }
 
 /** Кодировка выгрузки файла: заданная для языка в настройках игры, иначе — как у оригинала. */

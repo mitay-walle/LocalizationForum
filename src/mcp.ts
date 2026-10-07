@@ -21,6 +21,7 @@ const instructions = (L = variantLimits()) => `LocalizationForum — колле�
 - создать игру может любой вошедший — он становится её владельцем; остальное — только управляющий игрой (владелец, модератор всех языков, администратор);
 - формат каждого файла выбирается по расширению (format_map, «-» — не переводить, копировать как есть); после set_format_map вызовите reparse_game;
 - оригиналы загружайте пачками не больше ${MCP_UPLOAD_MB} МБ за вызов (текст — content, двоичные файлы — base64); удалённые файлы 30 дней лежат в корзине и возвращаются restore_source_files вместе с переводами;
+- готовый перевод файлами грузите upload_translation_files: mode=propose — как варианты «ИИ» (по умолчанию), mode=approve — сразу утвердить (только управляющим; спросите пользователя); строки, совпадающие с оригиналом, пропускаются;
 - не удаляйте файлы и языки без явной просьбы пользователя.`;
 
 type Call = (method: string, path: string, body?: unknown) => Promise<{ status: number; data: any }>;
@@ -275,6 +276,36 @@ function buildServer(call: Call, login: string) {
       return guard('POST', `${g(game)}/source`, {
         files: files.map((f) => (f.base64 !== undefined ? { path: f.path, content: '', data: f.base64 } : { path: f.path, content: f.content, encoding: f.encoding })),
         paths: replace ? files.map((f) => f.path) : undefined,
+      });
+    },
+  );
+
+  tool(
+    'upload_translation_files',
+    'Загрузить перевод',
+    `Загрузить готовый перевод файлами в родном формате игры (те же пути, что у оригиналов, например Scripts/Intro.gpc или Keyed/Alerts.xml). Строки сопоставляются с оригиналом по файлу и ключу; строки, совпадающие с оригиналом, пропускаются (keep_unchanged=true — не пропускать). Текст — content, байты — base64 (+ encoding, иначе определится сама). mode=approve — сразу утвердить (только управляющим игрой; overwrite=true заменит уже утверждённое), mode=propose — добавить как варианты (помечаются «ИИ», действуют проверки, этапы и лимиты сайта). Не больше ${MCP_UPLOAD_MB} МБ за вызов.`,
+    {
+      game: z.string(),
+      lang: z.string().describe('язык перевода, например ru'),
+      files: z
+        .array(z.object({ path: z.string().min(1), content: z.string().optional(), base64: z.string().optional(), encoding: z.string().optional() }))
+        .min(1)
+        .max(500),
+      mode: z.enum(['approve', 'propose']).default('propose'),
+      overwrite: z.boolean().default(false),
+      keep_unchanged: z.boolean().default(false),
+    },
+    async ({ game, lang, files, mode, overwrite, keep_unchanged }) => {
+      const size = files.reduce((n, f) => n + (f.base64?.length ?? Buffer.byteLength(f.content ?? '')) + f.path.length, 0);
+      if (size > MCP_UPLOAD_MB * 1_000_000) throw new Error(`Пачка ${(size / 1e6).toFixed(1)} МБ больше ${MCP_UPLOAD_MB} МБ — разделите файлы на несколько вызовов`);
+      const bad = files.find((f) => (f.content === undefined) === (f.base64 === undefined));
+      if (bad) throw new Error(`${bad.path}: укажите content (текст) или base64 (байты)`);
+      return guard('POST', `${g(game)}/translation`, {
+        lang,
+        mode,
+        overwrite,
+        keepUnchanged: keep_unchanged,
+        files: files.map((f) => (f.base64 !== undefined ? { path: f.path, content: '', data: f.base64, encoding: f.encoding } : { path: f.path, content: f.content })),
       });
     },
   );

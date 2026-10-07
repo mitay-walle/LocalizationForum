@@ -6,7 +6,7 @@ import { db } from './db.js';
 import { SignJWT, jwtVerify } from 'jose';
 import { env, list } from './env.js';
 import { PASSTHROUGH, fileFormat, isBuiltin, isMapKey, listFormats, resolveFormat, validateLinesConfig, makeLinesFormat } from './formats/index.js';
-import { TRASH_DAYS, deleteSource, exportLanguage, finalizeSource, importSource, importTranslation, outBytes, restoreSource, targetEncoding, type Game, type GameLink, type InFile } from './sync.js';
+import { TRASH_DAYS, deleteSource, exportLanguage, finalizeSource, importSource, importTranslation, matchTranslation, outBytes, restoreSource, targetEncoding, type Game, type GameLink, type InFile } from './sync.js';
 import { ENCODINGS, encodeText, encodingSupport, isEncoding, unrepresentable } from './encoding.js';
 import { validateVariant, type Rule } from './validate.js';
 import { variantLimits } from './limits.js';
@@ -963,12 +963,66 @@ app.post('/games/:slug/reparse', async (c) => {
 });
 
 /** Загрузка готового перевода с сайта: заполняет утверждённые строки. */
+/**
+ * Загрузить готовый перевод файлами (в родном формате игры; текст content или байты data в base64 + encoding).
+ * mode=approve (по умолчанию) — сразу утвердить, только для управляющих игрой; overwrite — заменить уже утверждённое.
+ * mode=propose — добавить строки как варианты (с теми же проверками, этапами и лимитами, что и на сайте).
+ * Строки, совпадающие с оригиналом, пропускаются (keepUnchanged=true — не пропускать).
+ */
 app.post('/games/:slug/translation', async (c) => {
-  const { game } = await requireManager(c);
-  const b = await body<{ lang: string; files: InFile[]; overwrite?: boolean }>(c);
-  checkLang(game, b.lang);
-  if (!Array.isArray(b.files)) fail(400, 'files: массив {path, content}');
-  return c.json(await importTranslation(game, b.lang, b.files, !!b.overwrite));
+  const b = await body<{ lang: string; files: InFile[]; overwrite?: boolean; mode?: 'approve' | 'propose'; keepUnchanged?: boolean }>(c);
+  if (!Array.isArray(b.files)) fail(400, 'files: массив {path, content} или {path, data (base64), encoding}');
+  if ((b.mode ?? 'approve') === 'approve') {
+    const { game } = await requireManager(c);
+    checkLang(game, b.lang);
+    return c.json(await importTranslation(game, b.lang, b.files, !!b.overwrite, { keepUnchanged: !!b.keepUnchanged }));
+  }
+  if (b.mode !== 'propose') fail(400, 'mode: approve или propose');
+  const user = await requireUser(c);
+  const game = await gameBySlug(c.req.param('slug')!);
+  const lang = checkLang(game, b.lang);
+  await requireNotBanned(user, game.id);
+  await requireStage(user, game.id, lang, 'propose');
+  const { rows, unknown, unchanged, errors } = await matchTranslation(game, lang, b.files, { keepUnchanged: !!b.keepUnchanged });
+  // Проверки — как у одиночного варианта; не прошедшие пропускаем и перечисляем
+  const rejected: { file: string; key: string; issues: string[] }[] = [];
+  const ok: typeof rows = [];
+  for (const r of rows) {
+    const issues = (await checkText({ ...game, source: r.source, file: r.file } as any, lang, r.text)).filter((i) => i.level === 'error');
+    if (issues.length) rejected.push({ file: r.file, key: r.key, issues: issues.map((i) => i.message) });
+    else ok.push(r);
+  }
+  const exempt = await isModerator(user, game.id, lang);
+  const L = variantLimits();
+  const ai = c.req.header('x-client') === 'mcp';
+  const res = await db().begin(async (sql) => {
+    await sql`select pg_advisory_xact_lock(${user.id})`;
+    let list = ok;
+    let limited = 0;
+    if (!exempt && list.length) {
+      const ids = list.map((r) => r.string_id);
+      const [h] = await sql<{ hour: number }[]>`select count(*)::int as hour from variants where author_id = ${user.id} and created_at > now() - interval '1 hour'`;
+      const counts = await sql<{ string_id: number; mine: number; total: number }[]>`
+        select string_id, count(*) filter (where author_id = ${user.id})::int as mine, count(*)::int as total
+        from variants where lang = ${lang} and string_id = any(${ids}) group by string_id`;
+      const byId = new Map(counts.map((r) => [r.string_id, r]));
+      const allowed = list.filter((r) => {
+        const n = byId.get(r.string_id);
+        return !((L.perUserString && (n?.mine ?? 0) >= L.perUserString) || (L.perString && (n?.total ?? 0) >= L.perString));
+      });
+      const room = L.perHour ? Math.max(0, L.perHour - h.hour) : allowed.length;
+      limited = list.length - Math.min(allowed.length, room);
+      list = allowed.slice(0, room);
+    }
+    let proposed = 0;
+    for (let i = 0; i < list.length; i += 1000) {
+      const batch = list.slice(i, i + 1000).map((r) => ({ string_id: r.string_id, lang, text: r.text, author_id: user.id, ai }));
+      const ins = await sql`insert into variants ${sql(batch, 'string_id', 'lang', 'text', 'author_id', 'ai')} on conflict (string_id, lang, text) do nothing`;
+      proposed += ins.count;
+    }
+    return { proposed, duplicates: list.length - proposed, limited };
+  });
+  return c.json({ ...res, rejected: rejected.length, rejectedSample: rejected.slice(0, 20), unknown, unchanged, errors });
 });
 
 /** Назначить или снять модератора. lang = '*' — все языки (может управлять игрой). */
