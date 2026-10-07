@@ -220,6 +220,11 @@ describe.skipIf(!url)('per-file formats', async () => {
     expect(png.cd).toContain('logo.png');
     expect((await raw('Scripts/Intro.gpc')).bytes.toString('utf8')).toBe(gpc);
     expect((await raw('nope')).status).toBe(404);
+    // ?file= — основной параметр; на Vercel ?path= занят переписыванием /api/:path* (приходит ещё и path=games/…)
+    const viaFile = await app.request(`http://api.test/api/games/mixed/source/raw?file=${encodeURIComponent('Scripts/Intro.gpc')}`, { headers: { Authorization: `Bearer ${owner}` } });
+    expect(Buffer.from(await viaFile.arrayBuffer()).toString('utf8')).toBe(gpc);
+    const rewritten = await app.request(`http://api.test/api/games/mixed/source/raw?path=games/mixed/source/raw&path=${encodeURIComponent('Scripts/Intro.gpc')}`, { headers: { Authorization: `Bearer ${owner}` } });
+    expect(rewritten.status).toBe(200);
 
     const stranger = await login('stranger2');
     expect((await call('GET', '/games/mixed/source/files', undefined, stranger)).status).toBe(403);
