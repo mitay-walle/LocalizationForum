@@ -15,14 +15,17 @@ function crc32(bytes: Uint8Array) {
   return (c ^ 0xffffffff) >>> 0;
 }
 
-export function makeZip(files: { path: string; content: string }[]): Uint8Array {
+/** Файл архива: текст (запишется в UTF-8) или готовые байты (например, в windows-1251 или с BOM). */
+export type ZipEntry = { path: string; content: string } | { path: string; data: Uint8Array };
+
+export function makeZip(files: ZipEntry[]): Uint8Array {
   const enc = new TextEncoder();
   const parts: Uint8Array[] = [];
   const central: Uint8Array[] = [];
   let offset = 0;
   for (const f of files) {
     const name = enc.encode(f.path);
-    const data = enc.encode(f.content);
+    const data = 'data' in f ? f.data : enc.encode(f.content);
     const crc = crc32(data);
     const local = new DataView(new ArrayBuffer(30));
     local.setUint32(0, 0x04034b50, true);

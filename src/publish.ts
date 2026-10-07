@@ -4,8 +4,9 @@
 // GitHub-токен с правом public_repo запрашивается у пользователя на один раз и нигде не хранится.
 import { db } from './db.js';
 import { makeZip } from './zip.js';
-import { exportLanguage, type Game } from './sync.js';
+import { exportLanguage, outBytes, type Game } from './sync.js';
 import { readme } from './readme.js';
+import { encodeText } from './encoding.js';
 
 const GH = 'https://api.github.com';
 
@@ -98,32 +99,57 @@ export async function publishGame(game: Game, token: string, opts: { version?: s
   const baseTree: string = parentCommit.data.tree.sha;
 
   // 3. Файлы
-  const files: { path: string; content: string }[] = [];
-  const sources = await db()<{ path: string; content: string }[]>`select path, content from source_files where game_id = ${game.id} order by path`;
-  for (const f of sources) files.push({ path: `source/${f.path}`, content: f.content });
-  const exports = new Map<string, { path: string; content: string }[]>();
+  // Файлы в UTF-8 без BOM уходят в дерево текстом; остальные (другая кодировка, BOM, файлы «как есть» — картинки и т. п.)
+  // — точными байтами через blob в base64
+  type PubFile = { path: string; content: string; encoding: string; data?: Uint8Array };
+  const files: PubFile[] = [];
+  const sources = await db()<{ path: string; content: string; encoding: string; data: Buffer | null }[]>`
+    select path, content, encoding, data from source_files where game_id = ${game.id} order by path`;
+  // оригиналы — в их собственной кодировке (или исходными байтами)
+  for (const f of sources) files.push({ path: `source/${f.path}`, content: f.content, encoding: f.encoding, data: f.data ? new Uint8Array(f.data) : undefined });
+  const exports = new Map<string, PubFile[]>();
   for (const lang of langs) {
     const ex = await exportLanguage(game, lang);
     // Языки без единого утверждённого перевода в репо кладём (полные файлы с оригиналом), но релиз не выпускаем
     exports.set(lang, ex.translated ? ex.files : []);
-    for (const f of ex.files) files.push({ path: `${lang}/${f.path}`, content: f.content });
+    for (const f of ex.files) files.push({ ...f, path: `${lang}/${f.path}` });
   }
   files.push({
+    encoding: 'utf-8',
     path: 'game.json',
-    content: JSON.stringify({ slug: game.slug, title: game.title, format: game.format, sourceLang: game.source_lang, languages: game.languages, forum: opts.site }, null, 2) + '\n',
+    content:
+      JSON.stringify(
+        { slug: game.slug, title: game.title, format: game.format, format_map: game.format_map ?? {}, sourceLang: game.source_lang, languages: game.languages, forum: opts.site },
+        null,
+        2,
+      ) + '\n',
   });
   // README для игроков генерируется заново при каждой публикации (контент детерминирован — без изменений коммита не будет)
-  files.push({ path: 'README.md', content: readme(game, opts.site) });
+  files.push({ path: 'README.md', content: readme(game, opts.site), encoding: 'utf-8' });
 
   // 4. Дерево пачками по ~2 МБ (у GitHub ограничение на размер запроса), каждая пачка поверх предыдущей
   let tree = baseTree;
   let chunk: typeof files = [];
   let size = 0;
+  // Блобы создаём по одному — у GitHub есть ограничения на параллельные запросы записи
+  const treeEntries = async (list: PubFile[]) => {
+    const out = [];
+    for (const f of list) {
+      if (!f.data && f.encoding === 'utf-8') {
+        out.push({ path: f.path, mode: '100644', type: 'blob', content: f.content });
+        continue;
+      }
+      const blob = await gh(token, 'POST', `/repos/${owner}/${name}/git/blobs`, { content: Buffer.from(outBytes(f, encodeText)).toString('base64'), encoding: 'base64' });
+      if (blob.status >= 300) ghError('Не удалось записать файл', blob);
+      out.push({ path: f.path, mode: '100644', type: 'blob', sha: blob.data.sha as string });
+    }
+    return out;
+  };
   const flush = async () => {
     if (!chunk.length) return;
     const r = await gh(token, 'POST', `/repos/${owner}/${name}/git/trees`, {
       base_tree: tree,
-      tree: chunk.map((f) => ({ path: f.path, mode: '100644', type: 'blob', content: f.content })),
+      tree: await treeEntries(chunk),
     });
     if (r.status >= 300) ghError('Не удалось записать файлы', r);
     tree = r.data.sha;
@@ -131,7 +157,7 @@ export async function publishGame(game: Game, token: string, opts: { version?: s
     size = 0;
   };
   for (const f of files) {
-    const s = Buffer.byteLength(f.content) + f.path.length + 64;
+    const s = (f.data ? Math.ceil(f.data.length * 1.34) : Buffer.byteLength(f.content)) + f.path.length + 64;
     if (size + s > 2_000_000) await flush();
     chunk.push(f);
     size += s;
@@ -169,12 +195,14 @@ export async function publishGame(game: Game, token: string, opts: { version?: s
       continue;
     }
     try {
+      const [ls] = await db()<{ revision: number }[]>`select revision from language_status where game_id = ${game.id} and lang = ${lang}`;
+      const revision = ls?.revision ?? 1;
       const credits = await db()<{ login: string; n: number }[]>`
         select u.login, count(*)::int as n from approved a join variants v on v.id = a.variant_id join users u on u.id = v.author_id
         join strings s on s.id = a.string_id where s.game_id = ${game.id} and a.lang = ${lang} and not s.removed
         group by u.login order by n desc, u.login`;
       const body = [
-        `Перевод «${game.title}» (${lang}), версия ${opts.version}.`,
+        `Перевод «${game.title}» (${lang}), версия ${opts.version}, ревизия ${revision}.`,
         '',
         `Распакуйте архив поверх файлов игры (структура папок как в оригинале).`,
         ...(credits.length ? ['', '**Переводчики:**', ...credits.map((c) => `- @${c.login} — ${c.n}`)] : []),
@@ -187,7 +215,7 @@ export async function publishGame(game: Game, token: string, opts: { version?: s
         continue;
       }
       if (rel.status >= 300) ghError('Не удалось создать релиз', rel);
-      const zip = makeZip(langFiles);
+      const zip = makeZip(langFiles.map((f) => ({ path: f.path, data: outBytes(f, encodeText) })));
       const asset = await gh(token, 'POST', `/repos/${owner}/${name}/releases/${rel.data.id}/assets?name=${encodeURIComponent(`${game.slug}-${tag}.zip`)}`, undefined, {
         contentType: 'application/zip',
         data: zip,

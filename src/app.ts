@@ -5,8 +5,9 @@ import { allowedReturn, currentUser, isModerator, signSession, signState, upsert
 import { db } from './db.js';
 import { SignJWT, jwtVerify } from 'jose';
 import { env, list } from './env.js';
-import { isBuiltin, listFormats, resolveFormat, validateLinesConfig, makeLinesFormat } from './formats/index.js';
-import { exportLanguage, finalizeSource, importSource, importTranslation, type Game, type GameLink, type InFile } from './sync.js';
+import { PASSTHROUGH, fileFormat, isBuiltin, isMapKey, listFormats, resolveFormat, validateLinesConfig, makeLinesFormat } from './formats/index.js';
+import { TRASH_DAYS, deleteSource, exportLanguage, finalizeSource, importSource, importTranslation, outBytes, restoreSource, targetEncoding, type Game, type GameLink, type InFile } from './sync.js';
+import { ENCODINGS, encodeText, encodingSupport, isEncoding, unrepresentable } from './encoding.js';
 import { validateVariant, type Rule } from './validate.js';
 import { variantLimits } from './limits.js';
 
@@ -55,7 +56,7 @@ app.onError((err, c) => {
   return c.json({ error: 'Внутренняя ошибка сервера' }, 500);
 });
 
-const fail = (status: 400 | 401 | 403 | 404 | 422 | 429, message: string): never => {
+const fail = (status: 400 | 401 | 403 | 404 | 409 | 422 | 429, message: string): never => {
   throw new HTTPException(status, { message });
 };
 
@@ -67,15 +68,15 @@ async function requireUser(c: Context): Promise<User> {
 
 async function gameBySlug(slug: string): Promise<Game> {
   const [g] = await db()<Game[]>`
-    select id, slug, title, repo, format, source_lang, languages, rules, description, links, cover_url from games where slug = ${slug}`;
+    select id, slug, title, repo, format, format_map, source_lang, languages, rules, description, links, cover_url, encodings, source_encoding from games where slug = ${slug}`;
   if (!g) fail(404, 'Игра не найдена');
   return g!;
 }
 
 async function stringWithGame(id: number) {
-  const [row] = await db()<(Game & { string_id: number; source: string; source_hash: string })[]>`
-    select s.id as string_id, s.source, s.source_hash,
-           g.id, g.slug, g.title, g.repo, g.format, g.source_lang, g.languages, g.rules
+  const [row] = await db()<(Game & { string_id: number; source: string; source_hash: string; file: string })[]>`
+    select s.id as string_id, s.source, s.source_hash, s.file,
+           g.id, g.slug, g.title, g.repo, g.format, g.format_map, g.source_lang, g.languages, g.rules, g.encodings
     from strings s join games g on g.id = s.game_id
     where s.id = ${id} and not s.removed`;
   if (!row) fail(404, 'Строка не найдена');
@@ -96,10 +97,21 @@ async function body<T>(c: Context): Promise<T> {
 }
 
 /** Проверки перевода: плейсхолдеры + правила языка игры + ограничения формата файла. */
-async function checkText(g: Game & { source: string }, lang: string, text: string) {
+async function checkText(g: Game & { source: string; file?: string }, lang: string, text: string) {
   const issues = validateVariant(g.source, text, ((g.rules as Record<string, Rule[]>)[lang] ?? []) as Rule[]);
-  const format = await resolveFormat(g.format);
+  // Формат — у каждого файла свой: каким файл разобран при загрузке, иначе по карте форматов игры
+  const [src] = g.file ? await db()<{ encoding: string; format: string | null }[]>`select encoding, format from source_files where game_id = ${g.id} and path = ${g.file}` : [];
+  const slug = src?.format ?? (g.file ? fileFormat(g, g.file) : g.format);
+  const format = slug && slug !== PASSTHROUGH ? await resolveFormat(slug) : null;
   for (const m of format?.validate?.(text) ?? []) issues.unshift({ level: 'error', message: m });
+  // Символы, которых нет в кодировке выгрузки этого файла для языка (только для однобайтовых и прочих неюникодных)
+  const enc = targetEncoding(g, lang, src?.encoding);
+  const bad = unrepresentable(text, enc);
+  if (bad.length)
+    issues.unshift({
+      level: 'error',
+      message: `${bad.length === 1 ? 'Символ' : 'Символы'} ${bad.slice(0, 5).map((c) => `«${c}»`).join(', ')} нельзя записать в кодировке ${enc} — выберите другую кодировку в настройках игры`,
+    });
   return issues;
 }
 
@@ -108,6 +120,11 @@ async function checkText(g: Game & { source: string }, lang: string, text: strin
 export const STATUSES = ['open', 'review', 'done'] as const;
 type Status = (typeof STATUSES)[number];
 const STATUS_TITLE: Record<Status, string> = { open: 'Групповой перевод', review: 'Апрув', done: 'Готово' };
+
+async function langRevision(gameId: number, lang: string): Promise<number> {
+  const [r] = await db()<{ revision: number }[]>`select revision from language_status where game_id = ${gameId} and lang = ${lang}`;
+  return r?.revision ?? 1;
+}
 
 async function langStatus(gameId: number, lang: string): Promise<Status> {
   const [r] = await db()<{ status: Status }[]>`select status from language_status where game_id = ${gameId} and lang = ${lang}`;
@@ -231,7 +248,7 @@ app.get('/me', async (c) => {
 
 app.get('/games', async (c) => {
   const rows = await db()`
-    select g.slug, g.title, g.repo, g.format, g.source_lang, g.languages, g.cover_url, g.links,
+    select g.slug, g.title, g.repo, g.format, g.format_map, g.source_lang, g.languages, g.cover_url, g.links,
       left(g.description, 300) as description,
       (select count(*)::int from strings s where s.game_id = g.id and not s.removed) as total,
       coalesce((select jsonb_object_agg(lang, n) from (
@@ -241,6 +258,27 @@ app.get('/games', async (c) => {
     from games g order by g.title`;
   return c.json({ games: rows });
 });
+
+/**
+ * Расширения файлов игры: сколько файлов и строк, какой формат назначен в карте (format) и какими
+ * форматами файлы разобраны сейчас (parsed — если отличается от format, нужен «Пересчитать строки»).
+ */
+async function extensionStats(g: Game) {
+  const rows = await db()<{ ext: string; files: number; strings: number; parsed: string[] }[]>`
+    with f as (
+      select path, format from source_files where game_id = ${g.id}
+      union all
+      select distinct s.file, null from strings s where s.game_id = ${g.id} and not s.removed
+        and not exists (select 1 from source_files sf where sf.game_id = s.game_id and sf.path = s.file)
+    )
+    select coalesce(lower(substring(f.path from '[^/.][^/]*([.][^./]+)$')), '') as ext,
+      count(*)::int as files,
+      coalesce(sum((select count(*) from strings s where s.game_id = ${g.id} and s.file = f.path and not s.removed)), 0)::int as strings,
+      coalesce(array_agg(distinct f.format) filter (where f.format is not null), '{}') as parsed
+    from f group by 1 order by 1`;
+  const map = g.format_map ?? {};
+  return rows.map((r) => ({ ...r, format: (r.ext ? map[r.ext] : undefined) ?? map['*'] ?? (g.format || null) }));
+}
 
 app.get('/games/:slug', async (c) => {
   const g = await gameBySlug(c.req.param('slug'));
@@ -257,13 +295,14 @@ app.get('/games/:slug', async (c) => {
     where s.game_id = ${g.id} and not s.removed
     group by l.lang`;
   const user = await currentUser(c);
-  const st = await db()<{ lang: string; status: Status; updated_at: string; by: string | null }[]>`
-    select ls.lang, ls.status, ls.updated_at, u.login as by from language_status ls left join users u on u.id = ls.updated_by
+  const st = await db()<{ lang: string; status: Status; revision: number; updated_at: string; by: string | null }[]>`
+    select ls.lang, ls.status, ls.revision, ls.updated_at, u.login as by from language_status ls left join users u on u.id = ls.updated_by
     where ls.game_id = ${g.id}`;
-  const status = Object.fromEntries(g.languages.map((l) => [l, st.find((x) => x.lang === l) ?? { lang: l, status: 'open' }]));
+  const status = Object.fromEntries(g.languages.map((l) => [l, st.find((x) => x.lang === l) ?? { lang: l, status: 'open', revision: 1 }]));
   const moderates = Object.fromEntries(await Promise.all(g.languages.map(async (l) => [l, await isModerator(user, g.id, l)])));
   const ban = user ? await activeBan(user.id, g.id) : null;
-  return c.json({ game: g, stats, status, moderates, canManage: await isModerator(user, g.id, '*'), ban, limits: variantLimits() });
+  const formats = await extensionStats(g);
+  return c.json({ game: g, stats, formats, status, moderates, canManage: await isModerator(user, g.id, '*'), ban, limits: variantLimits() });
 });
 
 app.get('/games/:slug/files', async (c) => {
@@ -323,7 +362,8 @@ app.get('/games/:slug/strings', async (c) => {
     ? await sql<Variant[]>`
         select v.id, v.string_id, v.text, u.login as author, v.created_at, v.ai,
           (select count(*)::int from votes x where x.variant_id = v.id) as votes,
-          exists (select 1 from votes x where x.variant_id = v.id and x.user_id = ${user?.id ?? 0}) as mine
+          exists (select 1 from votes x where x.variant_id = v.id and x.user_id = ${user?.id ?? 0}) as mine,
+          (select max(h.revision) from approved_history h where h.string_id = v.string_id and h.lang = v.lang and h.text = v.text) as was_approved_rev
         from variants v left join users u on u.id = v.author_id
         where v.string_id = any(${ids}) and v.lang = ${lang}
         order by votes desc, v.created_at`
@@ -341,6 +381,7 @@ app.get('/games/:slug/strings', async (c) => {
     total: rows[0]?.total ?? 0,
     canModerate: await isModerator(user, g.id, lang),
     status: await langStatus(g.id, lang),
+    revision: await langRevision(g.id, lang),
     limits: variantLimits(),
     strings: rows.map(({ total: _t, ...r }) => ({ ...r, variants: byString.get(r.id) ?? [] })),
   });
@@ -350,7 +391,15 @@ app.get('/games/:slug/strings', async (c) => {
 app.get('/games/:slug/export', async (c) => {
   const g = await gameBySlug(c.req.param('slug'));
   const lang = checkLang(g, c.req.query('lang'));
-  return c.json({ format: g.format, lang, ...(await exportLanguage(g, lang)) });
+  const ex = await exportLanguage(g, lang);
+  // ?binary=1 — готовые байты файлов (base64) в нужной кодировке, с BOM: для zip и выгрузки в репо игры
+  if (c.req.query('binary') === '1')
+    return c.json({ ...ex, format: g.format, format_map: g.format_map, lang, files: ex.files.map((f) => ({ path: f.path, encoding: f.encoding, data: Buffer.from(outBytes(f, encodeText)).toString('base64') })) });
+  // без binary: текст файлов; файлы «как есть» (картинки и т. п.) — байтами в data (base64)
+  return c.json({
+    format: g.format, format_map: g.format_map, lang, ...ex,
+    files: ex.files.map((f) => (f.data ? { path: f.path, content: '', encoding: f.encoding, data: Buffer.from(f.data).toString('base64') } : f)),
+  });
 });
 
 /** Титры: авторы утверждённых вариантов. */
@@ -560,25 +609,48 @@ function requireSync(c: Context) {
 interface GameMeta {
   slug: string;
   title: string;
-  format: string;
+  /** формат по умолчанию (старые game.json); формат каждого файла — по format_map */
+  format?: string;
+  format_map?: Record<string, string>;
   sourceLang?: string;
   languages: string[];
   repo?: string;
 }
 
+/**
+ * Проверить карту форматов {".xml": "rimworld", ".png": "-", "*": "plain-lines"}:
+ * ключи — расширения с точкой (приводятся к нижнему регистру) или «*», значения — существующий формат или «-».
+ */
+async function cleanFormatMap(raw: unknown): Promise<Record<string, string>> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) fail(400, 'format_map: объект { ".xml": "rimworld", ".png": "-" }');
+  const out: Record<string, string> = {};
+  const entries = Object.entries(raw as Record<string, unknown>);
+  if (entries.length > 200) fail(400, 'format_map: слишком много расширений');
+  for (const [k0, v] of entries) {
+    const k = String(k0).trim().toLowerCase();
+    if (!isMapKey(k)) fail(400, `format_map: «${k0}» — нужно расширение вида ".xml" или "*"`);
+    if (typeof v !== 'string' || (v !== PASSTHROUGH && !(await resolveFormat(v)))) fail(400, `format_map: неизвестный формат «${String(v)}» для ${k}`);
+    out[k] = v as string;
+  }
+  return out;
+}
+
 async function upsertGame(meta: GameMeta, rules: Record<string, Rule[]> = {}): Promise<Game> {
   if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(meta.slug ?? '')) fail(400, 'slug: латиница в нижнем регистре, цифры и дефис');
-  if (!(await resolveFormat(meta.format))) fail(400, `Неизвестный формат ${meta.format}`);
+  if (meta.format && !(await resolveFormat(meta.format))) fail(400, `Неизвестный формат ${meta.format}`);
+  // карта из game.json дополняет карту на форуме (её записи главнее), остальные расширения остаются как были
+  const map = meta.format_map !== undefined ? await cleanFormatMap(meta.format_map) : {};
   if (!Array.isArray(meta.languages) || !meta.languages.length) fail(400, 'languages: непустой список');
   const [g] = await db()<Game[]>`
-    insert into games (slug, title, format, source_lang, languages, repo, rules)
-    values (${meta.slug}, ${meta.title ?? meta.slug}, ${meta.format}, ${meta.sourceLang ?? 'en'},
+    insert into games (slug, title, format, format_map, source_lang, languages, repo, rules)
+    values (${meta.slug}, ${meta.title ?? meta.slug}, ${meta.format || ''}, ${db().json(map as never)}, ${meta.sourceLang ?? 'en'},
             ${meta.languages}, ${meta.repo ?? null}, ${db().json(rules as never)})
     on conflict (slug) do update set
-      title = excluded.title, format = excluded.format, source_lang = excluded.source_lang,
+      title = excluded.title, format = coalesce(${meta.format || null}, games.format), source_lang = excluded.source_lang,
+      format_map = games.format_map || excluded.format_map,
       languages = excluded.languages, repo = coalesce(excluded.repo, games.repo), rules = excluded.rules,
       updated_at = now()
-    returning id, slug, title, repo, format, source_lang, languages, rules`;
+    returning id, slug, title, repo, format, format_map, source_lang, languages, rules`;
   return g;
 }
 
@@ -679,13 +751,15 @@ function cleanInfo(b: { description?: unknown; links?: unknown; cover_url?: unkn
 app.post('/games', async (c) => {
   const user = await requireUser(c);
   await requireNotBanned(user, null);
-  const b = await body<{ slug: string; title: string; format: string; sourceLang?: string; languages: string[]; repo?: string; description?: string; links?: unknown; cover_url?: string }>(c);
+  const b = await body<{ slug: string; title: string; format?: string; format_map?: Record<string, string>; sourceLang?: string; languages: string[]; repo?: string; description?: string; links?: unknown; cover_url?: string }>(c);
   const slug = String(b.slug ?? '').trim();
   const title = String(b.title ?? '').trim();
   const sourceLang = String(b.sourceLang ?? 'en').trim() || 'en';
   if (!SLUG_RE.test(slug)) fail(400, 'Адрес: латиница в нижнем регистре, цифры и дефис');
   if (!title || title.length > 200) fail(400, 'Укажите название игры');
-  if (!(await resolveFormat(String(b.format ?? '')))) fail(400, 'Выберите формат файлов');
+  // Формат каждого файла выбирается по расширению при загрузке; format — необязательный формат по умолчанию
+  if (b.format && !(await resolveFormat(String(b.format)))) fail(400, 'Неизвестный формат файлов');
+  const formatMap = b.format_map !== undefined ? await cleanFormatMap(b.format_map) : {};
   if (!LANG_RE.test(sourceLang)) fail(400, 'Неверный код языка оригинала');
   const languages = cleanLanguages(b.languages, sourceLang);
   const repo = b.repo?.trim() || null;
@@ -694,8 +768,8 @@ app.post('/games', async (c) => {
   const sql = db();
   const created = await sql.begin(async (tx) => {
     const [g] = await tx<{ id: number }[]>`
-      insert into games (slug, title, format, source_lang, languages, repo, created_by, description, links, cover_url)
-      values (${slug}, ${title}, ${b.format}, ${sourceLang}, ${languages}, ${repo}, ${user.id},
+      insert into games (slug, title, format, format_map, source_lang, languages, repo, created_by, description, links, cover_url)
+      values (${slug}, ${title}, ${b.format ? String(b.format) : ''}, ${sql.json(formatMap as never)}, ${sourceLang}, ${languages}, ${repo}, ${user.id},
               ${info.description ?? null}, ${sql.json((info.links ?? []) as never)}, ${info.cover_url ?? null})
       on conflict (slug) do nothing returning id`;
     if (!g) return null;
@@ -714,23 +788,27 @@ app.get('/games/:slug/manage', async (c) => {
     where m.game_id = ${game.id} order by m.lang, u.login`;
   const [files] = await db()<{ files: number; strings: number }[]>`
     select count(distinct file)::int as files, count(*)::int as strings from strings where game_id = ${game.id} and not removed`;
-  return c.json({ game, moderators, ...files });
+  // Кодировки оригиналов (сколько файлов в какой) и какие кодировки не подходят языкам перевода
+  const fileEncodings = await db()<{ encoding: string; files: number }[]>`
+    select encoding, count(*)::int as files from source_files where game_id = ${game.id} and data is null group by encoding order by files desc, encoding`;
+  return c.json({ game, moderators, ...files, fileEncodings, encodingSupport: encodingSupport(game.languages), encodingList: ENCODINGS });
 });
 
 /** Изменить название, языки, репозиторий, правила проверок. */
 app.post('/games/:slug/settings', async (c) => {
   const { game } = await requireManager(c);
   const b = await body<{
-    title?: string; languages?: string[]; repo?: string | null; rules?: Record<string, Rule[]>; format?: string;
-    description?: string | null; links?: unknown; cover_url?: string | null; force?: boolean;
+    title?: string; languages?: string[]; repo?: string | null; rules?: Record<string, Rule[]>; format?: string; format_map?: Record<string, string>;
+    description?: string | null; links?: unknown; cover_url?: string | null; force?: boolean; encodings?: Record<string, string | null>;
   }>(c);
+  // Формат по умолчанию и карта «расширение → формат» меняются в любой момент: уже разобранные файлы
+  // остаются в прежнем формате (source_files.format), пока не нажать «Пересчитать строки» (/reparse).
   let format = game.format;
   if (b.format !== undefined && b.format !== game.format) {
-    if (!(await resolveFormat(String(b.format)))) fail(400, 'Неизвестный формат');
-    const [{ n }] = await db()<{ n: number }[]>`select count(*)::int as n from strings where game_id = ${game.id}`;
-    if (n) fail(422, 'Формат можно сменить, только пока в игре нет строк');
-    format = String(b.format);
+    if (b.format && !(await resolveFormat(String(b.format)))) fail(400, 'Неизвестный формат');
+    format = String(b.format ?? '');
   }
+  const formatMap = b.format_map !== undefined ? await cleanFormatMap(b.format_map) : game.format_map ?? {};
   const title = b.title !== undefined ? String(b.title).trim() : game.title;
   if (!title || title.length > 200) fail(400, 'Укажите название игры');
   const languages = b.languages !== undefined ? cleanLanguages(b.languages, game.source_lang) : game.languages;
@@ -744,6 +822,18 @@ app.post('/games/:slug/settings', async (c) => {
       fail(422, `У языка ${busy.map((x) => `${x.lang} (${x.n})`).join(', ')} есть утверждённые переводы. Чтобы всё равно убрать язык, подтвердите (force) — переводы сохранятся, но будут скрыты.`);
   }
   const info = cleanInfo(b);
+  // Кодировки выгрузки по языкам: {язык: кодировка}; пустое значение — «как в оригинале». Передаётся целиком.
+  let encodings = game.encodings ?? {};
+  if (b.encodings !== undefined) {
+    if (!b.encodings || typeof b.encodings !== 'object' || Array.isArray(b.encodings)) fail(400, 'encodings: объект { "ru": "windows-1251" }');
+    encodings = {};
+    for (const [l, e] of Object.entries(b.encodings)) {
+      if (!e) continue;
+      if (!languages.includes(l)) fail(400, `encodings: языка ${l} нет в игре`);
+      if (!isEncoding(e)) fail(400, `Неизвестная кодировка ${e}. Доступны: ${ENCODINGS.join(', ')}`);
+      encodings[l] = e;
+    }
+  }
   const repo = b.repo === undefined ? game.repo : b.repo?.trim() || null;
   if (repo && !/^[\w.-]+\/[\w.-]+$/.test(repo)) fail(400, 'Репозиторий: owner/name');
   let rules = game.rules;
@@ -764,13 +854,18 @@ app.post('/games/:slug/settings', async (c) => {
   }
   await db()`
     update games set title = ${title}, languages = ${languages}, repo = ${repo}, format = ${format},
+      format_map = ${db().json(formatMap as never)},
       rules = ${db().json(rules as never)},
       description = ${info.description !== undefined ? info.description : game.description ?? null},
       links = ${db().json((info.links ?? game.links ?? []) as never)},
       cover_url = ${info.cover_url !== undefined ? info.cover_url : game.cover_url ?? null},
+      encodings = ${db().json(encodings as never)},
       updated_at = now()
     where id = ${game.id}`;
-  return c.json({ ok: true });
+  // Сколько сохранённых оригиналов разобрано не тем форматом, что теперь задан в карте, — их пересчитает /reparse
+  const parsed = await db()<{ path: string; format: string | null }[]>`select path, format from source_files where game_id = ${game.id}`;
+  const reparse = parsed.filter((f) => (fileFormat({ format, format_map: formatMap }, f.path) ?? PASSTHROUGH) !== (f.format ?? format)).length;
+  return c.json({ ok: true, format_map: formatMap, reparse });
 });
 
 /**
@@ -786,11 +881,82 @@ app.post('/games/:slug/source', async (c) => {
   return c.json({ ...res, removed: res.removed + removed });
 });
 
+// ---------- оригинальные файлы: список, скачивание, удаление в корзину и возврат ----------
+
+/** Оригиналы игры: путь, формат разбора, кодировка, размер (байт), строк; trash — файлы в корзине (вернуть можно 30 дней). */
+app.get('/games/:slug/source/files', async (c) => {
+  const { game } = await requireManager(c);
+  const files = await db()`
+    select f.path, f.format, f.encoding, coalesce(octet_length(f.data), octet_length(f.content))::int as size,
+      (select count(*) from strings s where s.game_id = f.game_id and s.file = f.path and not s.removed)::int as strings,
+      f.updated_at
+    from source_files f where f.game_id = ${game.id} order by f.path`;
+  const trash = await db()`
+    select t.path, t.format, coalesce(octet_length(t.data), octet_length(t.content))::int as size, t.deleted_at, u.login as deleted_by
+    from source_files_trash t left join users u on u.id = t.deleted_by
+    where t.game_id = ${game.id} and t.deleted_at > now() - make_interval(days => ${TRASH_DAYS}) order by t.deleted_at desc, t.path`;
+  return c.json({ files, trash, trashDays: TRASH_DAYS });
+});
+
+/** Скачать оригинал байт в байт (текст — в его исходной кодировке, с BOM). */
+app.get('/games/:slug/source/raw', async (c) => {
+  const { game } = await requireManager(c);
+  const path = c.req.query('path') ?? '';
+  const [f] = await db()<{ content: string; encoding: string; data: Buffer | null }[]>`
+    select content, encoding, data from source_files where game_id = ${game.id} and path = ${path}`;
+  if (!f) fail(404, 'Файл не найден');
+  const bytes = f!.data ? new Uint8Array(f!.data) : encodeText(f!.content, f!.encoding);
+  const name = path.split('/').pop() || 'file';
+  return new Response(bytes as BodyInit, {
+    headers: {
+      'Content-Type': 'application/octet-stream',
+      'Content-Disposition': `attachment; filename="${name.replace(/[^\w.-]/g, '_')}"; filename*=UTF-8''${encodeURIComponent(name)}`,
+      'Cache-Control': 'private, no-store',
+    },
+  });
+});
+
+const MAX_PATHS = 5000;
+const cleanPaths = (v: unknown): string[] => {
+  if (!Array.isArray(v) || !v.length || v.some((p) => typeof p !== 'string' || !p.trim())) fail(400, 'paths: непустой список путей файлов');
+  if ((v as string[]).length > MAX_PATHS) fail(400, `paths: не больше ${MAX_PATHS} за раз`);
+  return v as string[];
+};
+
+/** Удалить один оригинал: DELETE /games/:slug/source?path=… */
+app.delete('/games/:slug/source', async (c) => {
+  const { user, game } = await requireManager(c);
+  const path = c.req.query('path');
+  if (!path) fail(400, 'Укажите path');
+  return c.json(await deleteSource(game, { paths: [path!] }, user.id));
+});
+
+/** Удалить несколько оригиналов: {paths: [...]} или всю папку {prefix: "Scripts/"}. */
+app.post('/games/:slug/source/delete', async (c) => {
+  const { user, game } = await requireManager(c);
+  const b = await body<{ paths?: string[]; prefix?: string }>(c);
+  if (b.prefix !== undefined) {
+    if (typeof b.prefix !== 'string' || !b.prefix.trim()) fail(400, 'prefix: начало пути, например "Scripts/"');
+    return c.json(await deleteSource(game, { prefix: b.prefix }, user.id));
+  }
+  return c.json(await deleteSource(game, { paths: cleanPaths(b.paths) }, user.id));
+});
+
+/** Вернуть удалённые оригиналы из корзины (строки возвращаются со своими вариантами и утверждениями). */
+app.post('/games/:slug/source/restore', async (c) => {
+  const { game } = await requireManager(c);
+  const b = await body<{ paths?: string[] }>(c);
+  return c.json(await restoreSource(game, cleanPaths(b.paths)));
+});
+
 /** Пересобрать строки из сохранённых оригиналов по текущему описанию формата (после правки формата). */
 app.post('/games/:slug/reparse', async (c) => {
   const { game } = await requireManager(c);
-  const files = await db()<InFile[]>`select path, content from source_files where game_id = ${game.id}`;
-  if (!files.length) fail(422, 'Оригиналы не сохранены — загрузите исходные файлы заново');
+  // Формат каждого файла — по текущей карте форматов; файлы «как есть» передаются своими байтами
+  const rows = await db()<{ path: string; content: string; encoding: string; data: Buffer | null }[]>`
+    select path, content, encoding, data from source_files where game_id = ${game.id}`;
+  if (!rows.length) fail(422, 'Оригиналы не сохранены — загрузите исходные файлы заново');
+  const files: InFile[] = rows.map((r) => ({ path: r.path, content: r.content, encoding: r.encoding, data: r.data ? new Uint8Array(r.data) : null }));
   const res = await importSource(game, files);
   const removed = (await finalizeSource(game, files.map((f) => f.path))).removed;
   return c.json({ ...res, removed: res.removed + removed });
@@ -1005,7 +1171,8 @@ app.post('/formats/:slug', async (c) => {
       config = coalesce(${config ? db().json(config as never) : null}, config),
       updated_at = now()
     where slug = ${slug}`;
-  const games = await db()<{ slug: string }[]>`select slug from games where format = ${slug}`;
+  const games = await db()<{ slug: string }[]>`
+    select slug from games where format = ${slug} or exists (select 1 from jsonb_each_text(format_map) m where m.value = ${slug})`;
   return c.json({ ok: true, games: games.map((g) => g.slug) });
 });
 
@@ -1054,7 +1221,7 @@ async function readPublishState(state: string): Promise<PublishState | null> {
 
 /** GitHub вернул пользователя с кодом: получаем одноразовый токен, публикуем, возвращаем на сайт с итогом. */
 async function handlePublishCallback(c: Context, st: PublishState) {
-  const [g] = await db()<Game[]>`select id, slug, title, repo, format, source_lang, languages, rules from games where id = ${st.gid}`;
+  const [g] = await db()<Game[]>`select id, slug, title, repo, format, format_map, source_lang, languages, rules, encodings from games where id = ${st.gid}`;
   const back = (result: unknown) => c.redirect(`${st.ret}#/g/${encodeURIComponent(g?.slug ?? '')}/settings?pub=${encodeURIComponent(JSON.stringify(result))}`);
   if (!g) return back({ error: 'Игра не найдена' });
   const [u] = await db()<User[]>`select id, login, avatar_url, is_admin from users where id = ${st.uid}`;
@@ -1100,4 +1267,81 @@ app.post('/games/:slug/status', async (c) => {
     insert into language_status (game_id, lang, status, updated_by) values (${g.id}, ${lang}, ${status}, ${user.id})
     on conflict (game_id, lang) do update set status = excluded.status, updated_by = excluded.updated_by, updated_at = now()`;
   return c.json({ ok: true, status, title: STATUS_TITLE[status as Status] });
+});
+
+// ---------- ревизии перевода ----------
+
+/** Права на ревизию: модератор языка / управляющий игрой / админ, не забаненный. */
+async function revisionScope(c: Context, undo = false) {
+  const user = await requireUser(c);
+  const g = await gameBySlug(c.req.param('slug')!);
+  const b = await body<{ lang: string; stage?: string }>(c);
+  const lang = checkLang(g, b.lang);
+  if (!(await isModerator(user, g.id, lang))) fail(403, 'Новую ревизию начинают модераторы этого языка');
+  await requireNotBanned(user, g.id);
+  // новая ревизия начинается с «Группового перевода» или «Апрува»; отмена может вернуть любой прежний этап
+  if (b.stage != null && !(undo ? STATUSES : ['open', 'review']).includes(String(b.stage) as Status))
+    fail(400, 'Этап новой ревизии: open (групповой перевод) или review (апрув)');
+  return { user, g, lang, stage: (b.stage ?? null) as Status | null };
+}
+
+/**
+ * Новая ревизия: все утверждения языка уходят в approved_history (с текущим номером ревизии), их тексты
+ * остаются вариантами (текст модератора без варианта становится вариантом от его имени), утверждения снимаются,
+ * номер ревизии растёт. Этап не меняется, если не передан stage.
+ */
+app.post('/games/:slug/revision', async (c) => {
+  const { user, g, lang, stage } = await revisionScope(c);
+  const current = await langStatus(g.id, lang);
+  if (current === 'done' && !stage) fail(422, 'Перевод на этапе «Готово». Укажите, с какого этапа начать новую ревизию: «Апрув» или «Групповой перевод».');
+  const result = await db().begin(async (tx) => {
+    await tx`insert into language_status (game_id, lang, status, updated_by) values (${g.id}, ${lang}, ${current}, ${user.id}) on conflict do nothing`;
+    const [ls] = await tx<{ revision: number; status: Status }[]>`
+      select revision, status from language_status where game_id = ${g.id} and lang = ${lang} for update`;
+    // тексты утверждений без варианта — в варианты (автор — утвердивший модератор), чтобы переутвердить в один клик
+    await tx`
+      insert into variants (string_id, lang, text, author_id, ai)
+      select a.string_id, a.lang, a.text, a.moderator_id, false
+      from approved a join strings s on s.id = a.string_id
+      where s.game_id = ${g.id} and a.lang = ${lang} and a.variant_id is null
+      on conflict (string_id, lang, text) do nothing`;
+    const archived = await tx`
+      insert into approved_history (game_id, lang, revision, string_id, text, variant_id, source_hash, moderator_id, approved_at)
+      select ${g.id}, a.lang, ${ls.revision}, a.string_id, a.text,
+        coalesce(a.variant_id, (select v.id from variants v where v.string_id = a.string_id and v.lang = a.lang and v.text = a.text)),
+        a.source_hash, a.moderator_id, a.approved_at
+      from approved a join strings s on s.id = a.string_id
+      where s.game_id = ${g.id} and a.lang = ${lang}`;
+    await tx`delete from approved a using strings s where s.id = a.string_id and s.game_id = ${g.id} and a.lang = ${lang}`;
+    const [next] = await tx<{ revision: number; status: Status }[]>`
+      update language_status set revision = revision + 1, status = ${stage ?? ls.status}, updated_by = ${user.id}, updated_at = now()
+      where game_id = ${g.id} and lang = ${lang} returning revision, status`;
+    return { revision: next.revision, archived: archived.count, stage: next.status, previousStage: ls.status };
+  });
+  return c.json(result);
+});
+
+/** Отменить новую ревизию: вернуть утверждения прошлой, если с тех пор ничего не утверждали. stage — вернуть и этап. */
+app.post('/games/:slug/revision/undo', async (c) => {
+  const { user, g, lang, stage } = await revisionScope(c, true);
+  const result = await db().begin(async (tx) => {
+    const [ls] = await tx<{ revision: number; status: Status }[]>`
+      select revision, status from language_status where game_id = ${g.id} and lang = ${lang} for update`;
+    if (!ls || ls.revision <= 1) fail(409, 'Отменять нечего: это первая ревизия');
+    const [{ n }] = await tx<{ n: number }[]>`
+      select count(*)::int as n from approved a join strings s on s.id = a.string_id where s.game_id = ${g.id} and a.lang = ${lang}`;
+    if (n) fail(409, `В ревизии ${ls.revision} уже утверждено строк: ${n}. Отменить новую ревизию нельзя — иначе эти утверждения пропадут.`);
+    const prev = ls.revision - 1;
+    const restored = await tx`
+      insert into approved (string_id, lang, text, variant_id, source_hash, moderator_id, approved_at)
+      select string_id, lang, text, variant_id, source_hash, moderator_id, coalesce(approved_at, now())
+      from approved_history where game_id = ${g.id} and lang = ${lang} and revision = ${prev}
+      on conflict (string_id, lang) do nothing`;
+    await tx`delete from approved_history where game_id = ${g.id} and lang = ${lang} and revision = ${prev}`;
+    const [next] = await tx<{ revision: number; status: Status }[]>`
+      update language_status set revision = ${prev}, status = ${stage ?? ls.status}, updated_by = ${user.id}, updated_at = now()
+      where game_id = ${g.id} and lang = ${lang} returning revision, status`;
+    return { revision: next.revision, restored: restored.count, stage: next.status };
+  });
+  return c.json(result);
 });
