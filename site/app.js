@@ -1163,9 +1163,10 @@ async function renderSettings(slug, q = new URLSearchParams()) {
       const v = tr.querySelector('select').value;
       if (v) format_map[tr.dataset.ext] = v;
     });
-    const r = await api(`/games/${encodeURIComponent(slug)}/settings`, { method: 'POST', body: { format_map } });
+    const r = await api(`/games/${encodeURIComponent(slug)}/settings`, { method: 'POST', body: { format_map, reparse: true } });
     await refreshFormats();
-    report(f, r.reparse ? [['warn', t('fmap.needReparse', { n: r.reparse })]] : [['ok', t('common.saved')]]);
+    const rp = r.reparsed;
+    report(f, rp ? [['ok', t('set.reparsed', rp)]] : r.reparse ? [['warn', t('fmap.needReparse', { n: r.reparse })]] : [['ok', t('common.saved')]]);
     f.querySelector('[data-reparse]')?.classList.toggle('primary', !!r.reparse);
   });
 
@@ -1354,7 +1355,7 @@ async function renderSettings(slug, q = new URLSearchParams()) {
   };
   const deleteFiles = async (paths) => {
     const r = paths.length === 1
-      ? await api(`/games/${encodeURIComponent(slug)}/source?path=${encodeURIComponent(paths[0])}`, { method: 'DELETE' })
+      ? await api(`/games/${encodeURIComponent(slug)}/source?file=${encodeURIComponent(paths[0])}`, { method: 'DELETE' })
       : await api(`/games/${encodeURIComponent(slug)}/source/delete`, { method: 'POST', body: { paths } });
     paths.forEach((p) => orig.sel.delete(p));
     await afterFilesChange();
@@ -1387,7 +1388,7 @@ async function renderSettings(slug, q = new URLSearchParams()) {
   };
   const downloadOriginal = async (path) => {
     const token = store.get('token');
-    const res = await fetch(`${API}/games/${encodeURIComponent(slug)}/source/raw?path=${encodeURIComponent(path)}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+    const res = await fetch(`${API}/games/${encodeURIComponent(slug)}/source/raw?file=${encodeURIComponent(path)}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || t('app.error', { status: res.status }));
     const url = URL.createObjectURL(await res.blob());
     const a = Object.assign(document.createElement('a'), { href: url, download: path.split('/').pop() });
