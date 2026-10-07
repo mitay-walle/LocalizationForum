@@ -65,7 +65,7 @@ describe.skipIf(!url)('api', async () => {
       sync: true,
       body: { game, files: walk(fixtures), rules: { ru: [{ pattern: '"', message: 'ёлочки', level: 'warn' }] } },
     });
-    expect(r.json).toEqual({ added: 9, changed: 0, removed: 0, unchanged: 0, errors: [] });
+    expect(r.json).toEqual({ added: 9, changed: 0, removed: 0, unchanged: 0, errors: [], formats: { '.xml': 'rimworld' }, raw: 0 });
     const list = await call('GET', '/games/rw/strings?lang=ru');
     expect(list.json.total).toBe(9);
     strings = list.json.strings;
@@ -250,14 +250,15 @@ describe.skipIf(!url)('api', async () => {
       token: carol,
       body: { files: [{ path: 'en.json', content: JSON.stringify({ menu: { start: 'Start', exit: 'Exit {0}' } }) }, { path: 'x.txt', content: 'ignored' }] },
     });
-    expect(up.json).toMatchObject({ added: 2, changed: 0, removed: 0 });
+    // формат — по расширению: .json (вложенный) → json-nested, .txt → построчный plain-lines
+    expect(up.json).toMatchObject({ added: 3, changed: 0, removed: 0, formats: { '.json': 'json-nested', '.txt': 'plain-lines' } });
 
     const st = await call('POST', '/games/site-game/settings', { token: carol, body: { languages: ['ru', 'uk'], title: 'Site Game 2', rules: { uk: [{ pattern: '[', message: 'x' }] } } });
     expect(st.status).toBe(400);
     expect((await call('POST', '/games/site-game/settings', { token: carol, body: { languages: ['ru', 'uk'], title: 'Site Game 2' } })).status).toBe(200);
     const m = (await call('GET', '/games/site-game/manage', { token: carol })).json;
     expect(m.game).toMatchObject({ title: 'Site Game 2', languages: ['ru', 'uk'] });
-    expect(m).toMatchObject({ files: 1, strings: 2 });
+    expect(m).toMatchObject({ files: 2, strings: 3 });
     expect(m.moderators).toEqual([{ login: 'carol', avatar_url: null, lang: '*' }]);
 
     const tr = await call('POST', '/games/site-game/translation', { token: carol, body: { lang: 'uk', files: [{ path: 'en.json', content: '{"menu":{"start":"Почати"}}' }] } });
@@ -274,7 +275,7 @@ describe.skipIf(!url)('api', async () => {
 
     // замена всех исходников: файла, которого нет в paths, больше нет
     const rep = await call('POST', '/games/site-game/source', { token: carol, body: { files: [{ path: 'b.json', content: '{"a":"A"}' }], paths: ['b.json'] } });
-    expect(rep.json).toMatchObject({ added: 1, removed: 2 });
+    expect(rep.json).toMatchObject({ added: 1, removed: 3 });
 
     expect((await call('DELETE', '/games/site-game', { token: carol })).status).toBe(403);
     expect((await call('DELETE', '/games/site-game', { token: boss })).status).toBe(200);
@@ -313,13 +314,17 @@ describe.skipIf(!url)('api', async () => {
     expect((await call('POST', `/strings/${who.id}/approve`, { token: erin, body: { lang: 'ru', text: 'Ты кто такой?' } })).status).toBe(200);
     const exp = (await call('GET', '/games/gp/export?lang=ru')).json;
     expect(exp.translated).toBe(1);
-    expect(exp.files).toEqual([{ path: 'Scripts/Intro.gpc', content: gpc.replace('Who are you?', 'Ты кто такой?') }]);
+    expect(exp.files).toEqual([{ path: 'Scripts/Intro.gpc', content: gpc.replace('Who are you?', 'Ты кто такой?'), encoding: 'utf-8' }]);
+    // байт в байт: CRLF оригинала сохраняются, файл в UTF-8 без BOM
+    expect(gpc).toContain('\r\n');
+    const bin = (await call('GET', '/games/gp/export?lang=ru&binary=1')).json.files[0];
+    expect(Buffer.from(bin.data, 'base64').equals(Buffer.from(gpc.replace('Who are you?', 'Ты кто такой?'), 'utf8'))).toBe(true);
 
     // пересборка строк из сохранённых оригиналов
     const rp = await call('POST', '/games/gp/reparse', { token: erin });
     expect(rp.json).toMatchObject({ added: 0, changed: 0, unchanged: 4, removed: 0 });
     // полная замена исходников удаляет и сохранённые оригиналы
     await call('POST', '/games/gp/source', { token: erin, body: { files: [{ path: 'Scripts/B.gpc', content: 'Me:\r\nYes.\r\n0' }], paths: ['Scripts/B.gpc'] } });
-    expect((await call('GET', '/games/gp/export?lang=ru')).json.files).toEqual([{ path: 'Scripts/B.gpc', content: 'Me:\r\nYes.\r\n0' }]);
+    expect((await call('GET', '/games/gp/export?lang=ru')).json.files).toEqual([{ path: 'Scripts/B.gpc', content: 'Me:\r\nYes.\r\n0', encoding: 'utf-8' }]);
   });
 });

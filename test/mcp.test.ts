@@ -149,6 +149,70 @@ describe.skipIf(!url)('mcp + oauth', async () => {
     expect(new URL(denied.body.redirect).searchParams.get('error')).toBe('access_denied');
   });
 
+  it('mcp: manage games — create, update info, languages, formats, upload/list/delete/restore files; non-managers denied', async () => {
+    const mk = async (session: string) => (await json(await req('/api/tokens', { method: 'POST', headers: { Authorization: `Bearer ${session}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'mcp' }) }))).body.token;
+    const carl = await mk(await login('carl'));
+    const dora = await mk(await login('dora'));
+    const tools = (await rpc(carl, 'tools/list')).body.result.tools;
+    for (const n of ['create_game', 'update_game_info', 'set_format_map', 'reparse_game', 'upload_source_files', 'delete_source_files', 'restore_source_files', 'list_source_files', 'add_language', 'remove_language', 'set_stage'])
+      expect(tools.find((t: any) => t.name === n), n).toBeTruthy();
+    expect(tools.find((t: any) => t.name === 'delete_source_files').annotations.readOnlyHint).toBe(false);
+    expect(tools.find((t: any) => t.name === 'list_source_files').annotations.readOnlyHint).toBe(true);
+
+    const created = await callTool(carl, 'create_game', { slug: 'mcp-game', title: 'MCP Game', source_lang: 'en', languages: ['ru'], description: 'Про игру', links: [{ kind: 'steam', url: 'https://store.steampowered.com/app/1/' }] });
+    expect(created).toMatchObject({ isError: false, data: { slug: 'mcp-game' } });
+    const upd = await callTool(carl, 'update_game_info', { game: 'mcp-game', title: 'MCP Game 2', cover_url: 'https://example.com/c.jpg' });
+    expect(upd.data).toMatchObject({ title: 'MCP Game 2', description: 'Про игру', cover_url: 'https://example.com/c.jpg' });
+    expect((await callTool(carl, 'add_language', { game: 'mcp-game', lang: 'uk' })).data).toEqual({ languages: ['ru', 'uk'] });
+
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 0, 1, 2]).toString('base64');
+    const up = await callTool(carl, 'upload_source_files', {
+      game: 'mcp-game',
+      files: [{ path: 'Lang/en.json', content: JSON.stringify({ a: 'Hello', b: 'Bye' }) }, { path: 'Scripts/notes.txt', content: 'One\nTwo\n' }, { path: 'logo.png', base64: png }],
+    });
+    expect(up.data).toMatchObject({ added: 4, raw: 1, formats: { '.json': 'json', '.txt': 'plain-lines', '.png': '-' } });
+    const big = await callTool(carl, 'upload_source_files', { game: 'mcp-game', files: [{ path: 'x.txt', content: 'x'.repeat(3_100_000) }] });
+    expect(big.isError).toBe(true);
+    expect(big.data).toContain('разделите');
+
+    const list = await callTool(carl, 'list_source_files', { game: 'mcp-game' });
+    expect(list.data.files.map((f: any) => [f.path, f.format, f.strings])).toEqual([['Lang/en.json', 'json', 2], ['Scripts/notes.txt', 'plain-lines', 2], ['logo.png', '-', 0]]);
+    expect(list.data.files.find((f: any) => f.path === 'logo.png').size).toBe(8);
+
+    // утвердить строку, удалить файл, вернуть — утверждение на месте
+    const s = (await callTool(carl, 'find_strings', { game: 'mcp-game', lang: 'ru', filter: 'all', file: 'Scripts/notes.txt' })).data.strings[0];
+    expect((await callTool(carl, 'approve_translation', { string_id: s.id, lang: 'ru', text: 'Один' })).isError).toBe(false);
+    const del = await callTool(carl, 'delete_source_files', { game: 'mcp-game', paths: ['Scripts/notes.txt'] });
+    expect(del.data).toMatchObject({ deleted: ['Scripts/notes.txt'], files: 1, strings: 2 });
+    expect((await callTool(carl, 'list_source_files', { game: 'mcp-game' })).data.trash.map((t: any) => t.path)).toEqual(['Scripts/notes.txt']);
+    expect((await callTool(carl, 'get_game', { game: 'mcp-game' })).data.stats.find((x: any) => x.lang === 'ru')).toMatchObject({ total: 2, approved: 0 });
+    const res = await callTool(carl, 'restore_source_files', { game: 'mcp-game', paths: ['Scripts/notes.txt'] });
+    expect(res.data).toMatchObject({ restored: ['Scripts/notes.txt'], strings: 2, skipped: [] });
+    expect((await callTool(carl, 'get_game', { game: 'mcp-game' })).data.stats.find((x: any) => x.lang === 'ru')).toMatchObject({ total: 4, approved: 1 });
+
+    expect((await callTool(carl, 'set_format_map', { game: 'mcp-game', format_map: { '.json': 'json', '.txt': '-', '.png': '-' } })).data).toMatchObject({ reparse: 1 });
+    expect((await callTool(carl, 'reparse_game', { game: 'mcp-game' })).data).toMatchObject({ removed: 2 });
+    expect((await callTool(carl, 'set_format_map', { game: 'mcp-game', format_map: { txt: 'x' } })).isError).toBe(true);
+
+    // чужой игрой управлять нельзя
+    for (const [name, args] of [
+      ['update_game_info', { game: 'mcp-game', title: 'hack' }],
+      ['upload_source_files', { game: 'mcp-game', files: [{ path: 'a.txt', content: 'A' }] }],
+      ['delete_source_files', { game: 'mcp-game', paths: ['Lang/en.json'] }],
+      ['restore_source_files', { game: 'mcp-game', paths: ['Lang/en.json'] }],
+      ['list_source_files', { game: 'mcp-game' }],
+      ['add_language', { game: 'mcp-game', lang: 'de' }],
+      ['set_format_map', { game: 'mcp-game', format_map: {} }],
+      ['reparse_game', { game: 'mcp-game' }],
+    ] as const) {
+      const r = await callTool(dora, name, args);
+      expect(r.isError, name).toBe(true);
+      expect(String(r.data), name).toContain('Управлять игрой');
+    }
+    expect((await callTool(carl, 'remove_language', { game: 'mcp-game', lang: 'ru' })).isError).toBe(true); // есть утверждённый перевод
+    expect((await callTool(carl, 'remove_language', { game: 'mcp-game', lang: 'uk' })).data).toEqual({ languages: ['ru'] });
+  });
+
   it('token via ?token= query and revocation', async () => {
     const r = await req(`/api/mcp?token=${apiToken}`, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }) });
     expect(r.status).toBe(200);

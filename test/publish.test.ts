@@ -39,9 +39,16 @@ describe.skipIf(!url)('publish to github', async () => {
     if (rest === '') return res(200, { default_branch: r.branch, permissions: { push: true } });
     if (rest.startsWith('/git/ref/heads/')) return res(200, { object: { sha: r.commit } });
     if (rest.startsWith('/git/commits/') && method === 'GET') return res(200, { tree: { sha: r.commits[rest.split('/').pop()!].tree } });
+    if (rest === '/git/blobs' && method === 'POST') {
+      // blob из base64: в «дереве» храним как 'base64:<данные>' — так и сравнивать проще, и видно, что ушли байты
+      r.blobs ??= {};
+      const sha = 'b' + Buffer.from(body.content).toString('hex').slice(0, 16) + body.content.length;
+      r.blobs[sha] = `${body.encoding}:${body.content}`;
+      return res(201, { sha });
+    }
     if (rest === '/git/trees') {
       const files = { ...r.trees[body.base_tree] };
-      for (const e of body.tree) files[e.path] = e.content;
+      for (const e of body.tree) files[e.path] = e.sha ? r.blobs[e.sha] : e.content;
       const same = Object.keys(files).length === Object.keys(r.trees[body.base_tree]).length && Object.entries(files).every(([k, v]) => r.trees[body.base_tree][k] === v);
       if (same) return res(201, { sha: body.base_tree });
       const sha = 't' + ++counter;
@@ -134,6 +141,7 @@ describe.skipIf(!url)('publish to github', async () => {
     expect(files['ru/Scripts/Intro.gpc']).toContain('Ты кто?');
     expect(files['README.md']).toContain('https://github.com/mitay-walle/localization_gunpoint_ru/releases/latest');
     expect(repo.releases[0].assets[0]).toMatchObject({ name: 'gp-ru-1.0.zip', head: 'PK' });
+    expect(repo.releases[0].body).toContain('версия 1.0, ревизия 1'); // номер ревизии в заметках к релизу
 
     // тег уже есть — публикация не падает, итог по языку: exists
     const dup = await publishGame(await game(), 'tok', { site: 'http://site.test/', version: '1.0' });
@@ -180,6 +188,29 @@ describe.skipIf(!url)('publish to github', async () => {
     await expect(publishGame(await game(), 'tok', { site: 'http://site.test/', langs: ['de'] })).rejects.toThrow(/de/);
   });
 
+  it('non-UTF-8 output goes as base64 blobs with exact bytes (target encoding per language)', async () => {
+    const { encodeText } = await import('../src/encoding.js');
+    globalThis.fetch = realFetch;
+    expect((await req('/api/games/gp/settings', owner, 'POST', { encodings: { ru: 'windows-1251', uk: 'utf-16le-bom' } })).status).toBe(200);
+    globalThis.fetch = fake as any;
+    log.length = 0;
+    await publishGame(await game(), 'tok', { site: 'http://site.test/', langs: ['ru', 'uk'] });
+    expect(log.filter((x) => x.endsWith('/git/blobs'))).toHaveLength(2);
+    const repo = repos.get('mitay-walle/localization_gunpoint_ru');
+    const files = repo.trees[repo.commits[repo.commit].tree];
+    const ru = String(files['ru/Scripts/Intro.gpc']);
+    expect(ru.startsWith('base64:')).toBe(true);
+    const ruBytes = Buffer.from(ru.slice(7), 'base64');
+    expect(ruBytes.includes(Buffer.from([0xd2, 0xfb]))).toBe(true); // «Ты» в windows-1251
+    const uk = Buffer.from(String(files['uk/Scripts/Intro.gpc']).slice(7), 'base64');
+    expect([...uk.subarray(0, 2)]).toEqual([0xff, 0xfe]);
+    expect(uk.equals(Buffer.from(encodeText(uk.subarray(2).toString('utf16le'), 'utf-16le-bom')))).toBe(true);
+    expect(typeof files['source/Scripts/Intro.gpc']).toBe('string'); // оригинал в UTF-8 — обычным текстом
+    expect(String(files['source/Scripts/Intro.gpc']).startsWith('base64:')).toBe(false);
+    // повторная публикация без изменений — без коммита (блобы детерминированы)
+    expect((await publishGame(await game(), 'tok', { site: 'http://site.test/', langs: ['ru', 'uk'] })).commit).toBeNull();
+  });
+
   it('publish/start validates langs and carries them in the OAuth state', async () => {
     globalThis.fetch = realFetch;
     process.env.GITHUB_CLIENT_ID = 'cid';
@@ -197,5 +228,17 @@ describe.skipIf(!url)('publish to github', async () => {
   it('refuses to create a repo under another owner', async () => {
     const g = await game();
     await expect(publishGame({ ...g, repo: 'someone-else/x' }, 'tok', { site: 'http://site.test/' })).rejects.toThrow(/someone-else/);
+  });
+  it('raw files (images) go to source/ and language folders byte-for-byte; game.json carries format_map', async () => {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d, 0xff, 0x00]);
+    const up = await (await req('/api/games/gp/source', owner, 'POST', { files: [{ path: 'Textures/logo.png', content: '', data: png.toString('base64') }] })).json();
+    expect(up).toMatchObject({ raw: 1, formats: { '.png': '-' } });
+    const g = (await db()`select id, slug, title, repo, format, format_map, source_lang, languages, rules from games where slug = 'gp'`)[0] as any;
+    await publishGame(g, 'tok', { site: 'http://site.test/', langs: ['ru'] });
+    const repo = repos.get('mitay-walle/localization_gunpoint_ru');
+    const files = repo.trees[repo.commits[repo.commit].tree];
+    expect(files['source/Textures/logo.png']).toBe(`base64:${png.toString('base64')}`);
+    expect(files['ru/Textures/logo.png']).toBe(`base64:${png.toString('base64')}`);
+    expect(JSON.parse(files['game.json']).format_map).toEqual({ '.gpc': 'gunpoint', '.png': '-' });
   });
 });
