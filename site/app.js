@@ -93,7 +93,99 @@ async function refreshById(id) {
   if (card) await refreshCard(card);
 }
 
+// ---------- резервная копия только для чтения (снимок на GitHub Pages) ----------
+// Пока API отвечает, снимок не трогаем вовсе. Если чтение (GET) не удалось — сеть, тайм-аут 8 с, 5xx, 402/429 —
+// переключаемся на снимок до перезагрузки страницы: баннер, все действия записи выключены.
+const PAGES_DATA = 'https://mitay-walle.github.io/LocalizationForum/data/';
+const SNAPSHOT_BASE = window.FORUM_SNAPSHOT || (location.hostname.endsWith('github.io') ? new URL('data/', location.href.split('#')[0]).href : PAGES_DATA);
+const snapshot = { on: false, meta: null, files: new Map(), strings: new Map() };
+const READ_TIMEOUT_MS = 8000;
+const failoverStatus = (st) => st >= 500 || st === 402 || st === 429;
+
+async function snapFile(rel) {
+  if (!snapshot.files.has(rel)) {
+    snapshot.files.set(rel, fetch(SNAPSHOT_BASE + rel).then((r) => {
+      if (!r.ok) throw Object.assign(new Error(t('snap.unavailable')), { status: 404 });
+      return r.json();
+    }));
+    snapshot.files.get(rel).catch(() => snapshot.files.delete(rel)); // ошибку не кэшируем
+  }
+  return snapshot.files.get(rel);
+}
+
+async function enterSnapshot() {
+  if (snapshot.on) return;
+  snapshot.on = true;
+  me = null; // в копии нет входа и записи
+  snapshot.meta = await snapFile('meta.json').catch(() => null);
+  renderAccount();
+}
+
+function renderSnapshotBanner() {
+  let el = document.getElementById('snapshot-banner');
+  if (!snapshot.on) return el?.remove();
+  if (!el) {
+    el = Object.assign(document.createElement('div'), { id: 'snapshot-banner', className: 'snapshot-banner' });
+    el.setAttribute('role', 'status');
+    document.querySelector('header.top').after(el);
+  }
+  const date = snapshot.meta?.generatedAt ? new Date(snapshot.meta.generatedAt).toLocaleString(getLocale()) : '?';
+  el.innerHTML = `<span>${t('snap.banner', { date: esc(date) })}</span><button type="button" class="btn small" data-act="snap-retry">${t('snap.retry')}</button>`;
+}
+
+/** Ответ API из снимка: те же формы данных; фильтры, поиск и страницы строк — локально. */
+async function snapshotGet(path) {
+  const [p, qs] = path.split('?');
+  const q = new URLSearchParams(qs || '');
+  const parts = p.split('/').filter(Boolean).map(decodeURIComponent);
+  const seg = encodeURIComponent;
+  if (p === '/me') return { user: null };
+  if (p === '/games') return snapFile('games.json');
+  if (p === '/formats') return snapFile('formats.json');
+  if (parts[0] === 'games' && parts.length === 2) return snapFile(`games/${seg(parts[1])}.json`);
+  if (parts[0] === 'games' && parts.length === 3) {
+    const [, slug, what] = parts;
+    const lang = q.get('lang') || '';
+    if (what === 'files' || what === 'credits') return snapFile(`games/${seg(slug)}/${what}/${seg(lang)}.json`);
+    if (what === 'strings') return snapshotStrings(slug, lang, q);
+  }
+  throw Object.assign(new Error(t('snap.readOnly')), { status: 0 });
+}
+
+async function snapshotStrings(slug, lang, q) {
+  const key = `${slug}\n${lang}`;
+  if (!snapshot.strings.has(key)) {
+    snapshot.strings.set(key, (async () => {
+      const dir = `games/${encodeURIComponent(slug)}/strings/${encodeURIComponent(lang)}/`;
+      const first = await snapFile(dir + '1.json');
+      const pages = Math.max(1, Math.ceil(first.total / first.pageSize));
+      const rest = await Promise.all(Array.from({ length: pages - 1 }, (_, i) => snapFile(`${dir}${i + 2}.json`)));
+      return { first, all: [first, ...rest].flatMap((d) => d.strings) };
+    })());
+  }
+  const { first, all } = await snapshot.strings.get(key);
+  const filter = q.get('filter') || 'all';
+  const file = q.get('file') || '';
+  const needle = (q.get('q') || '').trim().toLowerCase();
+  const keep = {
+    all: () => true,
+    untranslated: (s) => s.approved_text == null,
+    voting: (s) => s.approved_text == null && s.variants.length > 0,
+    approved: (s) => s.approved_text != null && !s.stale,
+    stale: (s) => s.approved_text != null && !!s.stale,
+  }[filter] || (() => true);
+  const found = all.filter(
+    (s) => keep(s) && (!file || s.file === file) &&
+      (!needle || [s.key, s.source, s.approved_text].some((x) => x && String(x).toLowerCase().includes(needle))),
+  );
+  const pageSize = first.pageSize;
+  const page = Math.max(1, Number(q.get('page')) || 1);
+  return { ...first, page, total: found.length, canModerate: false, strings: found.slice((page - 1) * pageSize, page * pageSize) };
+}
+
 async function api(path, { method = 'GET', body } = {}) {
+  if (method === 'GET' && snapshot.on) return snapshotGet(path);
+  if (method !== 'GET' && snapshot.on) throw Object.assign(new Error(t('snap.readOnly')), { status: 0 });
   // Accept-Language — на будущее: сервер пока отвечает по-русски
   const headers = { 'Accept-Language': getLocale() };
   const token = store.get('token');
@@ -101,9 +193,22 @@ async function api(path, { method = 'GET', body } = {}) {
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   let res;
   try {
-    res = await fetch(API + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+    res = await fetch(API + path, {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: method === 'GET' ? AbortSignal.timeout(READ_TIMEOUT_MS) : undefined,
+    });
   } catch {
+    if (method === 'GET') {
+      await enterSnapshot();
+      return snapshotGet(path);
+    }
     throw Object.assign(new Error(t('app.offline')), { status: 0 });
+  }
+  if (method === 'GET' && failoverStatus(res.status)) {
+    await enterSnapshot();
+    return snapshotGet(path);
   }
   const data = await res.json().catch(() => ({}));
   if (res.status === 401 && token) { store.set('token', null); me = null; renderAccount(); }
@@ -112,6 +217,7 @@ async function api(path, { method = 'GET', body } = {}) {
 }
 
 function login() {
+  if (snapshot.on) return toast(t('snap.readOnly'));
   store.set('returnRoute', location.hash || '#/');
   const ret = location.origin + location.pathname;
   location.href = `${API}/auth/login?return=${encodeURIComponent(ret)}`;
@@ -132,10 +238,11 @@ async function loadMe() {
 const localeOptions = () => LOCALES.map(([c, n]) => `<option value="${c}" ${c === getLocale() ? 'selected' : ''}>${esc(n)}</option>`).join('');
 
 function renderAccount() {
+  renderSnapshotBanner();
   account.innerHTML = `
     ${me
       ? `${me.avatar_url ? `<img class="avatar" src="${esc(me.avatar_url)}&s=52" alt="">` : ''}<span>${esc(me.login)}</span>`
-      : `<button class="btn small primary" data-act="login">${t('account.login')}</button>`}
+      : snapshot.on ? '' : `<button class="btn small primary" data-act="login">${t('account.login')}</button>`}
     <select class="ui-lang" data-ui="lang" title="${esc(t('ui.language'))}" aria-label="${esc(t('ui.language'))}">${localeOptions()}</select>
     <button class="icon-btn" data-act="ui-menu" title="${esc(t('ui.settings'))}" aria-label="${esc(t('ui.settings'))}">⚙</button>
     <div class="ui-menu" hidden>
@@ -240,7 +347,7 @@ async function renderHome() {
   crumbs.innerHTML = '';
   docTitle();
   const { games } = await api('/games');
-  const head = `<div class="page-head"><h1>${t('home.title')}</h1><span class="spacer"></span><a class="btn" href="#/formats">${t('home.formats')}</a>${me ? `<a class="btn primary" href="#/new">${t('home.newGame')}</a>` : `<button class="btn" data-act="login">${t('home.loginToAdd')}</button>`}</div>`;
+  const head = `<div class="page-head"><h1>${t('home.title')}</h1><span class="spacer"></span><a class="btn" href="#/formats">${t('home.formats')}</a>${me ? `<a class="btn primary" href="#/new">${t('home.newGame')}</a>` : snapshot.on ? '' : `<button class="btn" data-act="login">${t('home.loginToAdd')}</button>`}</div>`;
   if (!games.length) {
     view.innerHTML = head + `<div class="empty">${t('home.empty')}${me ? ' ' + t('home.emptyAdd') : ''}</div>`;
     return;
@@ -298,7 +405,7 @@ async function renderGame(slug, lang, q) {
   // Что можно делать на этом этапе (сервер проверяет то же самое)
   const can = { propose: stage === 'open' || (stage === 'review' && canMod), vote: stage === 'open' || (stage === 'review' && canMod), approve: stage !== 'done' && canMod };
   // Забаненный (в игре или на всём форуме) только читает — сервер проверяет то же самое
-  if (ban) can.propose = can.vote = can.approve = false;
+  if (ban || snapshot.on) can.propose = can.vote = can.approve = false; // бан или копия только для чтения
   state = { slug, lang, game, data, params, files: files.files, stage, can, ban, canManage };
   const st = stats.find((s) => s.lang === lang) || { approved: 0, stale: 0, voting: 0, total: 0 };
   state.st = st;
@@ -320,7 +427,8 @@ async function renderGame(slug, lang, q) {
           <span>${t('game.total')} <b>${st.total}</b></span>
           ${game.languages.length > 1 ? `<span>${t('game.language')} <select data-act="lang">${game.languages.map((l) => `<option value="${esc(l)}" ${l === lang ? 'selected' : ''}>${esc(langName(l))}</option>`).join('')}</select></span>` : ''}
           <span class="spacer"></span>
-          ${st.approved ? `<button class="btn small" data-act="download" data-slug="${esc(slug)}" data-lang="${esc(lang)}">${t('game.download')}</button>` : ''}
+          ${!st.approved ? '' : !snapshot.on ? `<button class="btn small" data-act="download" data-slug="${esc(slug)}" data-lang="${esc(lang)}">${t('game.download')}</button>`
+            : game.repo ? `<a class="btn small" href="https://github.com/${esc(game.repo)}/releases?q=${encodeURIComponent(lang + '-')}&expanded=true" target="_blank" rel="noopener">${t('game.download')}</a>` : ''}
           ${canManage ? `<a class="btn small" href="${settingsHref}">${t('game.settings')}</a>` : ''}
         </div>
         ${renderStageBanner(status?.[lang], canMod)}
@@ -441,6 +549,7 @@ document.addEventListener('click', async (e) => {
   if (act === 'login') return login();
   if (act === 'logout') return logout();
   if (act === 'undo') return undoLast();
+  if (act === 'snap-retry') return location.reload();
   if (['vote', 'propose', 'approve', 'approve-text', 'unapprove', 'delete', 'copy-source'].includes(act) && !me) return login();
   const card = el.closest('[data-string]');
   try {
@@ -662,6 +771,10 @@ const parseLangs = (v) => v.split(/[\s,;]+/).map((x) => x.trim()).filter(Boolean
 async function renderNewGame() {
   crumbs.innerHTML = `${gamesCrumb()} / ${t('new.title')}`;
   docTitle(t('new.title'));
+  if (snapshot.on) {
+    view.innerHTML = `<div class="empty">${t('snap.readOnly')}</div>`;
+    return;
+  }
   if (!me) {
     view.innerHTML = `<div class="empty">${t('new.loginPrompt', { button: `<button class="btn primary" data-act="login">${t('new.loginButton')}</button>` })}</div>`;
     return;
@@ -721,7 +834,11 @@ async function renderNewGame() {
 }
 
 async function renderSettings(slug, q = new URLSearchParams()) {
-  const [data, { bans }] = await Promise.all([api(`/games/${encodeURIComponent(slug)}/manage`), api(`/games/${encodeURIComponent(slug)}/bans`)]);
+  const [data, { bans }, { stats }] = await Promise.all([
+    api(`/games/${encodeURIComponent(slug)}/manage`),
+    api(`/games/${encodeURIComponent(slug)}/bans`),
+    api(`/games/${encodeURIComponent(slug)}`),
+  ]);
   const { game, moderators, files, strings } = data;
   const banDate = (d) => esc(new Date(d).toLocaleString(getLocale()));
   const formats = await loadFormats(true);
@@ -783,6 +900,18 @@ async function renderSettings(slug, q = new URLSearchParams()) {
         <h2>${t('set.publish')}</h2>
         ${publishResult(q.get('pub'))}
         <p class="muted">${t('set.publishHelp', { repo: game.repo ? esc(game.repo) : t('set.publishRepoFallback') })}</p>
+        <fieldset class="pub-langs">
+          <legend>${t('pub.langs')}</legend>
+          ${game.languages
+            .map((l) => {
+              const st = stats.find((x) => x.lang === l) || { approved: 0, total: 0 };
+              // По умолчанию ничего не отмечено (кроме случая с одним языком или перехода с кнопки «Опубликовать» языка)
+              const on = game.languages.length === 1 || q.get('publish') === l;
+              return `<label class="check"><input type="checkbox" name="langs" value="${esc(l)}" ${on ? 'checked' : ''}> <b>${esc(langName(l))}</b> <span class="mono muted">${esc(l)}</span> <span class="muted">${t('pub.langApproved', { a: st.approved, t: st.total })}</span></label>`;
+            })
+            .join('')}
+          <small class="muted">${t('pub.others')}</small>
+        </fieldset>
         <label>${t('set.version')}<input name="version" placeholder="${esc(t('set.versionPh'))}" pattern="[0-9A-Za-z][0-9A-Za-z._\\-]{0,39}">
           <small>${t('set.versionHint')}</small></label>
         <div class="actions"><button class="btn primary" ${game.repo ? '' : 'disabled'}>${t('set.publishBtn')}</button>${game.repo ? `<a href="https://github.com/${esc(game.repo)}" target="_blank" rel="noopener">${t('set.openRepo')}</a>` : `<span class="muted">${t('set.repoFirst')}</span>`}</div>
@@ -956,14 +1085,15 @@ async function renderSettings(slug, q = new URLSearchParams()) {
   });
 
   onSubmit('publish', async (f) => {
+    if (!f.querySelector('input[name=langs]:checked')) throw new Error(t('pub.chooseLang'));
     const r = await api(`/games/${encodeURIComponent(slug)}/publish/start`, {
       method: 'POST',
-      body: { version: f.version.value.trim(), return: location.origin + location.pathname },
+      body: { version: f.version.value.trim(), langs: [...f.querySelectorAll('input[name=langs]:checked')].map((x) => x.value), return: location.origin + location.pathname },
     });
     report(f, [['warn', t('set.toGithub')]]);
     location.href = r.url;
   });
-  if (q.get('pub')) forms.publish.scrollIntoView({ block: 'center' });
+  if (q.get('pub') || q.get('publish')) forms.publish.scrollIntoView({ block: 'center' });
 
   onSubmit('bans', async (f) => {
     const purge = f.purge.checked;
@@ -1284,15 +1414,30 @@ function publishResult(raw) {
   const parts = [
     t(r.created ? 'pub.created' : 'pub.repo', { link: link(r.url, r.repo) }),
     r.commit ? t('pub.commit', { link: link(`${r.url}/commit/${r.commit}`, r.commit.slice(0, 7)), n: r.files }) : t('pub.noChanges'),
-    ...(r.releases || []).map((tag) => t('pub.release', { link: link(`${r.url}/releases/tag/${tag}`, tag) })),
   ];
-  return `<ul class="issues"><li class="ok">${t('pub.done')} ${parts.join(' ')}</li></ul>`;
+  // Итог по каждому языку: релиз, тег уже есть, нечего выпускать, ошибка или просто обновлён в репо
+  const level = { released: 'ok', committed: 'ok', exists: 'warn', skipped: 'warn', error: 'error' };
+  const langs = (r.langs || []).map((x) => {
+    const name = esc(langName(x.lang));
+    const msg =
+      x.status === 'released' ? t('pub.res.released', { lang: name, link: link(`${r.url}/releases/tag/${x.tag}`, x.tag) })
+      : x.status === 'exists' ? t('pub.res.exists', { lang: name, tag: esc(x.tag) })
+      : x.status === 'skipped' ? t('pub.res.skipped', { lang: name })
+      : x.status === 'error' ? t('pub.res.error', { lang: name, error: esc(x.error || '') })
+      : t('pub.res.committed', { lang: name });
+    return `<li class="${level[x.status] || 'ok'}">${msg}</li>`;
+  });
+  return `<ul class="issues"><li class="ok">${t('pub.done')} ${parts.join(' ')}</li>${langs.join('')}</ul>`;
 }
 
 // ---------- токены и подключение MCP ----------
 async function renderTokens() {
   crumbs.innerHTML = `${gamesCrumb()} / ${t('tok.title')}`;
   docTitle(t('tok.title'));
+  if (snapshot.on) {
+    view.innerHTML = `<div class="empty">${t('snap.readOnly')}</div>`;
+    return;
+  }
   if (!me) {
     view.innerHTML = `<div class="empty"><button class="btn primary" data-act="login">${t('account.login')}</button></div>`;
     return;
@@ -1554,6 +1699,7 @@ async function renderOverview(slug) {
         <span class="ov-actions">
           <a class="btn small primary" href="${href(slug, l)}">${t('ov.translate')}</a>
           ${gh ? `<a class="btn small" href="${esc(gh)}/releases?q=${encodeURIComponent(l + '-')}&expanded=true" target="_blank" rel="noopener" title="${esc(t('ov.downloadTitle', { lang: langName(l) }))}">${t('ov.download')}</a>` : ''}
+          ${canManage && game.repo ? `<a class="btn small" href="#/g/${encodeURIComponent(slug)}/settings?publish=${encodeURIComponent(l)}" title="${esc(t('pub.publishLangTitle', { lang: langName(l) }))}">${t('pub.publishLang')}</a>` : ''}
           ${canManage ? `<button type="button" class="link" data-ov-remove="${esc(l)}" title="${esc(t('lp.remove', { lang: langName(l) }))}">×</button>` : ''}
         </span>
         <div class="ov-confirm" hidden></div>
