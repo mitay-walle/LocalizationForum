@@ -1,11 +1,16 @@
-# Публикует site/ на GitHub Pages. Адрес API берётся из переменной репозитория FORUM_API_URL.
-# Один раз: Settings → Pages → Source: GitHub Actions.
+# Публикует site/ на GitHub Pages вместе со снимком данных форума (site/data/) — это зеркало
+# только для чтения: если API на Vercel недоступен, сайт сам переключается на снимок.
+# Адрес API — переменная репозитория FORUM_API_URL (без /api). Один раз: Settings → Pages → Source: GitHub Actions.
+# Снимок обновляется при каждом push в site/ и раз в сутки. Если снимок не удался, шаг падает
+# и на Pages остаётся прошлая публикация.
 name: Pages
 
 on:
   push:
     branches: [main, master]
-    paths: ['site/**', '.github/workflows/pages.yml']
+    paths: ['site/**', 'scripts/snapshot.mjs', '.github/workflows/pages.yml']
+  schedule:
+    - cron: '23 4 * * *'
   workflow_dispatch:
 
 permissions:
@@ -25,10 +30,17 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - name: config.js
         env:
           FORUM_API_URL: ${{ vars.FORUM_API_URL }}
         run: node -e "require('fs').writeFileSync('site/config.js', 'window.FORUM_API = ' + JSON.stringify(process.env.FORUM_API_URL || '') + ';\n')"
+      - name: Снимок данных форума (зеркало только для чтения)
+        env:
+          FORUM_API_URL: ${{ vars.FORUM_API_URL }}
+        run: node scripts/snapshot.mjs site/data
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
