@@ -1018,13 +1018,18 @@ const jwtKey = () => new TextEncoder().encode(env('JWT_SECRET'));
 /** Начать публикацию: вернуть ссылку на GitHub, где пользователь разрешит запись в публичные репо (один раз, токен не хранится). */
 app.post('/games/:slug/publish/start', async (c) => {
   const { user, game } = await requireManager(c);
-  const b = await body<{ version?: string; return?: string }>(c);
+  const b = await body<{ version?: string; return?: string; langs?: string[] }>(c);
   const version = String(b.version ?? '').trim();
   if (version && !VERSION_RE.test(version)) fail(400, 'Версия: латиница, цифры, точки и дефисы, например 1.0 или 1.6.2');
+  // Публикуются только выбранные языки — папки остальных в репо не меняются
+  const langs = Array.isArray(b.langs) ? [...new Set(b.langs.map(String))] : [];
+  if (!langs.length) fail(400, 'Выберите хотя бы один язык для публикации');
+  const unknown = langs.filter((l) => !game.languages.includes(l));
+  if (unknown.length) fail(400, `Языков ${unknown.join(', ')} нет в игре`);
   if (!game.repo) fail(400, 'Сначала укажите репозиторий (owner/name) и сохраните настройки');
   const ret = b.return ?? '';
   if (!allowedReturn(ret, c.req.url)) fail(400, 'Недопустимый адрес возврата');
-  const state = await new SignJWT({ typ: 'publish', gid: game.id, uid: user.id, ver: version, ret })
+  const state = await new SignJWT({ typ: 'publish', gid: game.id, uid: user.id, ver: version, langs, ret })
     .setProtectedHeader({ alg: 'HS256' })
     .setExpirationTime('15m')
     .sign(jwtKey());
@@ -1036,7 +1041,7 @@ app.post('/games/:slug/publish/start', async (c) => {
   return c.json({ url: url.toString() });
 });
 
-type PublishState = { gid: number; uid: number; ver: string; ret: string };
+type PublishState = { gid: number; uid: number; ver: string; langs?: string[]; ret: string };
 
 async function readPublishState(state: string): Promise<PublishState | null> {
   try {
@@ -1071,7 +1076,8 @@ async function handlePublishCallback(c: Context, st: PublishState) {
   try {
     const site = new URL(st.ret);
     const { publishGame } = await import('./publish.js'); // модуль публикации (zip, GitHub API) грузим только когда нужен
-    const result = await publishGame(g, tok.access_token, { version: st.ver || undefined, site: site.origin + site.pathname });
+    const langs = (st.langs ?? g.languages).filter((l) => g.languages.includes(l));
+    const result = await publishGame(g, tok.access_token, { version: st.ver || undefined, site: site.origin + site.pathname, langs });
     return back(result);
   } catch (e) {
     return back({ error: (e as Error).message });

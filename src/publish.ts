@@ -1,5 +1,6 @@
-// «Опубликовать в GitHub»: одним коммитом выложить в репо игры оригиналы, переводы и game.json,
-// при необходимости создать репо и выпустить Release с zip для каждого языка.
+// «Опубликовать в GitHub»: одним коммитом выложить в репо игры оригиналы, переводы выбранных языков и game.json,
+// при необходимости создать репо и выпустить Release с zip для каждого выбранного языка.
+// Папки остальных языков не трогаются: коммит строится поверх текущего дерева репо (base_tree).
 // GitHub-токен с правом public_repo запрашивается у пользователя на один раз и нигде не хранится.
 import { db } from './db.js';
 import { makeZip } from './zip.js';
@@ -8,12 +9,22 @@ import { readme } from './readme.js';
 
 const GH = 'https://api.github.com';
 
+/** Итог по языку: committed — обновлён в репо (версия не указана); released — выпущен релиз;
+ *  exists — тег уже есть (папка обновлена, релиз не создан); skipped — нет утверждённых строк; error — релиз не удался. */
+export interface LangResult {
+  lang: string;
+  status: 'committed' | 'released' | 'exists' | 'skipped' | 'error';
+  tag?: string;
+  error?: string;
+}
+
 export interface PublishResult {
   repo: string;
   created: boolean;
   commit: string | null;
   files: number;
   releases: string[];
+  langs: LangResult[];
   url: string;
 }
 
@@ -46,7 +57,12 @@ function ghError(what: string, r: { status: number; data: any }): never {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-export async function publishGame(game: Game, token: string, opts: { version?: string; site: string }): Promise<PublishResult> {
+export async function publishGame(game: Game, token: string, opts: { version?: string; site: string; langs?: string[] }): Promise<PublishResult> {
+  // Какие языки публикуем; по умолчанию — все
+  const langs = [...new Set(opts.langs ?? game.languages)];
+  if (!langs.length) throw new Error('Выберите хотя бы один язык для публикации');
+  const unknown = langs.filter((l) => !game.languages.includes(l));
+  if (unknown.length) throw new Error(`Языков ${unknown.join(', ')} нет в игре`);
   if (!game.repo || !/^[\w.-]+\/[\w.-]+$/.test(game.repo)) throw new Error('В настройках игры не указан репозиторий вида owner/name');
   const [owner, name] = game.repo.split('/');
 
@@ -86,7 +102,7 @@ export async function publishGame(game: Game, token: string, opts: { version?: s
   const sources = await db()<{ path: string; content: string }[]>`select path, content from source_files where game_id = ${game.id} order by path`;
   for (const f of sources) files.push({ path: `source/${f.path}`, content: f.content });
   const exports = new Map<string, { path: string; content: string }[]>();
-  for (const lang of game.languages) {
+  for (const lang of langs) {
     const ex = await exportLanguage(game, lang);
     // Языки без единого утверждённого перевода в репо кладём (полные файлы с оригиналом), но релиз не выпускаем
     exports.set(lang, ex.translated ? ex.files : []);
@@ -126,7 +142,7 @@ export async function publishGame(game: Game, token: string, opts: { version?: s
   let commit: string | null = null;
   if (tree !== baseTree) {
     const c = await gh(token, 'POST', `/repos/${owner}/${name}/git/commits`, {
-      message: `Перевод: публикация с форума${opts.version ? ` (${opts.version})` : ''}`,
+      message: `Перевод: публикация с форума — ${langs.join(', ')}${opts.version ? ` (${opts.version})` : ''}`,
       tree,
       parents: [parent],
     });
@@ -138,12 +154,21 @@ export async function publishGame(game: Game, token: string, opts: { version?: s
   const head = commit ?? parent;
 
   // 6. Релизы: по одному на язык, тег <язык>-<версия>, во вложении zip папки языка
+  // Ошибка одного языка (например, тег уже есть) не мешает остальным — итог по каждому языку в results.
   const releases: string[] = [];
-  if (opts.version) {
-    for (const lang of game.languages) {
-      const langFiles = exports.get(lang) ?? [];
-      if (!langFiles.length) continue;
-      const tag = `${lang}-${opts.version}`;
+  const results: LangResult[] = [];
+  for (const lang of langs) {
+    if (!opts.version) {
+      results.push({ lang, status: 'committed' });
+      continue;
+    }
+    const langFiles = exports.get(lang) ?? [];
+    const tag = `${lang}-${opts.version}`;
+    if (!langFiles.length) {
+      results.push({ lang, status: 'skipped', tag });
+      continue;
+    }
+    try {
       const credits = await db()<{ login: string; n: number }[]>`
         select u.login, count(*)::int as n from approved a join variants v on v.id = a.variant_id join users u on u.id = v.author_id
         join strings s on s.id = a.string_id where s.game_id = ${game.id} and a.lang = ${lang} and not s.removed
@@ -157,7 +182,10 @@ export async function publishGame(game: Game, token: string, opts: { version?: s
         `Форум: ${opts.site}#/g/${game.slug}/${lang}`,
       ].join('\n');
       const rel = await gh(token, 'POST', `/repos/${owner}/${name}/releases`, { tag_name: tag, target_commitish: head, name: `${game.title} — ${lang} ${opts.version}`, body });
-      if (rel.status === 422) throw new Error(`Релиз ${tag} уже существует — укажите другую версию`);
+      if (rel.status === 422) {
+        results.push({ lang, status: 'exists', tag, error: `Релиз ${tag} уже существует — укажите другую версию` });
+        continue;
+      }
       if (rel.status >= 300) ghError('Не удалось создать релиз', rel);
       const zip = makeZip(langFiles);
       const asset = await gh(token, 'POST', `/repos/${owner}/${name}/releases/${rel.data.id}/assets?name=${encodeURIComponent(`${game.slug}-${tag}.zip`)}`, undefined, {
@@ -167,8 +195,11 @@ export async function publishGame(game: Game, token: string, opts: { version?: s
       });
       if (asset.status >= 300) ghError('Не удалось приложить архив к релизу', asset);
       releases.push(tag);
+      results.push({ lang, status: 'released', tag });
+    } catch (e) {
+      results.push({ lang, status: 'error', tag, error: (e as Error).message });
     }
   }
 
-  return { repo: game.repo, created, commit, files: files.length, releases, url: `https://github.com/${game.repo}` };
+  return { repo: game.repo, created, commit, files: files.length, releases, langs: results, url: `https://github.com/${game.repo}` };
 }
