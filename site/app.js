@@ -1,5 +1,6 @@
 // LocalizationForum — клиент. Без сборки: обычный ES-модуль.
 import { LOCALES, detectLocale, getLocale, setLocale, t } from './i18n.js';
+import { ENCODINGS, decodeBytes, detectEncoding, looksBinary } from './encoding.js';
 
 const API = (window.FORUM_API || '').replace(/\/$/, '') + '/api';
 const view = document.getElementById('view');
@@ -359,7 +360,7 @@ async function renderHome() {
         ${coverImg(g)}
         <h2><a class="card-link" href="#/g/${encodeURIComponent(g.slug)}">${esc(g.title)}</a></h2>
         ${g.description ? `<p class="card-desc">${esc(g.description)}</p>` : ''}
-        <div class="muted">${t('home.strings', { n: g.total })} · ${esc(g.format)}${g.repo ? ` · <a href="https://github.com/${esc(g.repo)}" target="_blank" rel="noopener">${esc(g.repo)}</a>` : ''}</div>
+        <div class="muted">${t('home.strings', { n: g.total })}${usedFormats(g) ? ` · ${esc(usedFormats(g))}` : ''}${g.repo ? ` · <a href="https://github.com/${esc(g.repo)}" target="_blank" rel="noopener">${esc(g.repo)}</a>` : ''}</div>
         <div class="langs">${g.languages
           .map((l) => {
             const p = pct(g.approved[l] || 0, g.total);
@@ -455,8 +456,62 @@ function renderStageBanner(info, canMod) {
   const ctl = canMod
     ? `<span class="spacer"></span><div class="seg" role="group" aria-label="${esc(t('stage.aria'))}">${STAGES.map((k) => `<button type="button" data-act="stage" data-v="${k}" class="${k === cur ? 'on' : ''}">${esc(stageInfo(k)[1])}</button>`).join('')}</div>`
     : '';
-  return `<div class="stage-banner ${cur}">${stageChip(cur)}<span class="muted">${esc(desc)}${when}</span>${ctl}</div>`;
+  const rev = `<span class="rev-label" title="${esc(t('rev.help'))}">${t('rev.label', { n: info?.revision ?? 1 })}</span>`;
+  const revBtn = canMod && !snapshot.on ? revisionButton(state.slug, state.lang, (state.st?.approved ?? 0) + (state.st?.stale ?? 0), cur) : '';
+  return `<div data-rev-host><div class="stage-banner ${cur}">${stageChip(cur)}${rev}<span class="muted">${esc(desc)}${when}</span>${ctl}${revBtn}</div><div class="rev-box" hidden></div></div>`;
 }
+
+// ---------- ревизии: «Новая ревизия» снимает все утверждения языка (тексты остаются вариантами) ----------
+
+const revisionButton = (slug, lang, count, stage) =>
+  `<button type="button" class="btn small" data-rev-open data-slug="${esc(slug)}" data-lang="${esc(lang)}" data-count="${count}" data-stage="${esc(stage)}">${t('rev.new')}</button>`;
+
+document.addEventListener('click', async (e) => {
+  const open = e.target.closest('[data-rev-open]');
+  if (open) {
+    const { slug, lang, count, stage } = open.dataset;
+    const box = open.closest('[data-rev-host]').querySelector('.rev-box');
+    box.hidden = false;
+    // Подтверждение прямо на странице: сколько утверждений снимется и с какого этапа начать
+    box.innerHTML = `<div class="rev-confirm" data-slug="${esc(slug)}" data-lang="${esc(lang)}" data-stage="${esc(stage)}">
+      <p>${t('rev.confirm', { n: count })}</p>
+      ${stage === 'done' ? `<p class="muted">${t('rev.doneStage')}</p>` : ''}
+      <label>${t('rev.stage')} <select data-rev-stage>
+        ${stage === 'done' ? '' : `<option value="">${t('rev.keepStage', { stage: esc(stageInfo(stage)[1]) })}</option>`}
+        <option value="review" selected>${esc(stageInfo('review')[1])}</option>
+        <option value="open">${esc(stageInfo('open')[1])}</option>
+      </select></label>
+      <div class="actions"><button type="button" class="btn small bad" data-rev-go>${t('rev.go')}</button><button type="button" class="btn small" data-rev-cancel>${t('common.cancel')}</button></div>
+    </div>`;
+    return;
+  }
+  if (e.target.closest('[data-rev-cancel]')) {
+    const box = e.target.closest('.rev-box');
+    box.hidden = true;
+    box.innerHTML = '';
+    return;
+  }
+  const go = e.target.closest('[data-rev-go]');
+  if (!go) return;
+  const c = go.closest('.rev-confirm');
+  const { slug, lang } = c.dataset;
+  const path = `/games/${encodeURIComponent(slug)}/revision`;
+  try {
+    go.disabled = true;
+    const r = await api(path, { method: 'POST', body: { lang, stage: c.querySelector('[data-rev-stage]').value || undefined } });
+    toast(t('rev.done', { n: r.revision, archived: r.archived }), {
+      label: t('rev.undo'),
+      run: async () => {
+        await api(`${path}/undo`, { method: 'POST', body: { lang, stage: r.previousStage } });
+        await route();
+      },
+    });
+    await route();
+  } catch (err) {
+    go.disabled = false;
+    toast(err.message);
+  }
+});
 
 /** Плашка «вы заблокированы»: причина и срок. */
 function renderBanBanner(ban) {
@@ -497,7 +552,7 @@ function renderString(s) {
       const canDelete = me && state.stage !== 'done' && ((v.author === me.login && canPropose) || mod);
       return `<li class="variant">
         <button class="vote ${v.mine ? 'mine' : ''}" data-act="vote" data-id="${v.id}" data-mine="${v.mine ? 1 : 0}" title="${esc(voteTitle(v))}" ${canVote ? '' : 'disabled'}>▲<span>${v.votes}</span></button>
-        <div><div class="vtext">${esc(v.text)}</div><div class="vmeta">${esc(v.author || t('str.anon'))}${v.ai ? aiBadge() : ''}${banLink(v.author)}</div></div>
+        <div><div class="vtext">${esc(v.text)}</div><div class="vmeta">${esc(v.author || t('str.anon'))}${v.ai ? aiBadge() : ''}${v.was_approved_rev ? ` <span class="prev-rev">${t('rev.wasApproved', { n: v.was_approved_rev })}</span>` : ''}${banLink(v.author)}</div></div>
         <div class="vactions">
           ${mod ? `<button class="btn small" data-act="approve" data-id="${s.id}" data-variant="${v.id}">${t('str.approve')}</button>` : ''}
           ${canDelete ? `<button class="link" data-act="delete" data-id="${v.id}" title="${esc(t('str.deleteTitle'))}">${t('str.delete')}</button>` : ''}
@@ -760,6 +815,30 @@ function formatOptions(list, selected) {
   }).join('');
 }
 
+// ---------- форматы по расширениям файлов ----------
+
+/** «-» в карте форматов игры — файл не переводится, копируется в перевод как есть. */
+const RAW = '-';
+/** Расширение файла в нижнем регистре с точкой (как extOf на сервере): «Scripts/A.GPC» → «.gpc», без расширения — ''. */
+const extOf = (path) => {
+  const base = path.split('/').pop() || '';
+  const i = base.lastIndexOf('.');
+  return i > 0 ? base.slice(i).toLowerCase() : '';
+};
+const formatTitle = (list, slug) => (slug === RAW ? t('fmap.raw') : list.find((f) => f.slug === slug)?.title || slug);
+/** Форматы игры для карточки на главной: разные форматы из карты (без «как есть»), иначе формат по умолчанию. */
+const usedFormats = (g) => [...new Set(Object.values(g.format_map || {}).filter((v) => v !== RAW))].join(', ') || g.format || '';
+/** Формат для файла по карте игры: расширение → «*». undefined — расширения в карте нет. */
+const mappedFormat = (map, path) => map?.[extOf(path)] ?? map?.['*'];
+/** Какие форматы объявили расширение (кандидаты при автоподборе на сервере). */
+const formatsForExt = (list, ext) => list.filter((f) => f.extensions.some((e) => e.toLowerCase() === ext));
+/** Варианты для строки таблицы форматов: «по умолчанию» (для «*» — «не задан»), «как есть», затем все форматы. */
+function mapOptions(list, selected, emptyLabel) {
+  return `${emptyLabel ? `<option value="" ${selected ? '' : 'selected'}>${esc(emptyLabel)}</option>` : ''}
+    <option value="${RAW}" ${selected === RAW ? 'selected' : ''}>${esc(t('fmap.raw'))}</option>
+    ${formatOptions(list, selected)}`;
+}
+
 const slugify = (s) =>
   s.toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
@@ -779,15 +858,13 @@ async function renderNewGame() {
     view.innerHTML = `<div class="empty">${t('new.loginPrompt', { button: `<button class="btn primary" data-act="login">${t('new.loginButton')}</button>` })}</div>`;
     return;
   }
-  const formats = await loadFormats(true);
   view.innerHTML = `
     <form class="panel form" data-form="new-game">
       <h1>${t('new.title')}</h1>
       <label>${t('new.name')}<input name="title" required maxlength="200" placeholder="RimWorld" autocomplete="off"></label>
       <label>${t('new.slug')}<input name="slug" required pattern="[a-z0-9][a-z0-9\\-]{0,62}" placeholder="rimworld" autocomplete="off">
         <small>${t('new.slugHint')}</small></label>
-      <label>${t('new.format')}<select name="format">${formatOptions(formats, 'rimworld')}</select>
-        <small>${t('new.formatHint')}</small></label>
+      <p class="muted">${t('new.formatAuto')} ${t('new.formatHint')}</p>
       <div class="row2">
         <label>${t('new.sourceLang')}<input name="sourceLang" value="en" required></label>
         <div class="field"><span class="field-label">${t('new.languages')}</span>${langPicker('languages', ['ru'])}<small>${t('new.languagesHint')}</small></div>
@@ -817,7 +894,6 @@ async function renderNewGame() {
         body: {
           title: f.title.value,
           slug: f.slug.value,
-          format: f.format.value,
           sourceLang: f.sourceLang.value.trim(),
           languages: parseLangs(f.languages.value),
           repo: f.repo.value,
@@ -834,7 +910,7 @@ async function renderNewGame() {
 }
 
 async function renderSettings(slug, q = new URLSearchParams()) {
-  const [data, { bans }, { stats }] = await Promise.all([
+  const [data, { bans }, { stats, formats: extStats }] = await Promise.all([
     api(`/games/${encodeURIComponent(slug)}/manage`),
     api(`/games/${encodeURIComponent(slug)}/bans`),
     api(`/games/${encodeURIComponent(slug)}`),
@@ -842,7 +918,6 @@ async function renderSettings(slug, q = new URLSearchParams()) {
   const { game, moderators, files, strings } = data;
   const banDate = (d) => esc(new Date(d).toLocaleString(getLocale()));
   const formats = await loadFormats(true);
-  const fmt = fmtInfo(formats, game.format);
   crumbs.innerHTML = `${gamesCrumb()} / <a href="#/g/${encodeURIComponent(slug)}">${esc(game.title)}</a> / ${t('set.title')}`;
   docTitle(t('set.docTitle', { game: game.title }));
   const langOptions = (withAll) =>
@@ -860,7 +935,6 @@ async function renderSettings(slug, q = new URLSearchParams()) {
             <small>${t('set.languagesHint')}</small></div>
           <label>${t('set.repo')}<input name="repo" value="${esc(game.repo || '')}" placeholder="owner/name"></label>
         </div>
-        ${strings ? `<p class="muted">${t('set.formatIs', { name: esc(fmt.name) })}</p>` : `<label>${t('new.format')}<select name="format">${formatOptions(formats, game.format)}</select><small>${t('set.formatHint')}</small></label>`}
         <p class="muted">${t('set.address', { slug: `<span class="mono">${esc(game.slug)}</span>`, lang: esc(game.source_lang) })}</p>
         <div class="actions"><button class="btn primary">${t('common.save')}</button></div>
         <ul class="issues"></ul>
@@ -877,12 +951,54 @@ async function renderSettings(slug, q = new URLSearchParams()) {
         <ul class="issues"></ul>
       </form>
 
+      <form class="panel form" data-form="encodings">
+        <h2>${t('enc.title')}</h2>
+        <p class="muted">${t('enc.help')}</p>
+        <p>${data.fileEncodings.length ? t('enc.originals', { list: data.fileEncodings.map((x) => `<span class="mono">${esc(x.encoding)}</span> (${x.files})`).join(', ') }) : `<span class="muted">${t('enc.noFiles')}</span>`}</p>
+        ${game.languages
+          .map((l) => `<div class="enc-row" data-lang="${esc(l)}">
+            <label>${esc(langName(l))} <span class="mono muted">${esc(l)}</span>
+              <select name="enc_${esc(l)}">
+                <option value="">${t('enc.asSource', { enc: esc(data.fileEncodings.map((x) => x.encoding).join(', ') || 'utf-8') })}</option>
+                ${data.encodingList.map((e) => `<option value="${e}" ${game.encodings?.[l] === e ? 'selected' : ''}>${e}</option>`).join('')}
+              </select></label>
+            <small class="enc-warn" role="alert"></small>
+          </div>`)
+          .join('')}
+        <div class="actions"><button class="btn primary">${t('common.save')}</button></div>
+        <ul class="issues"></ul>
+      </form>
+
+      <form class="panel form" data-form="formats">
+        <h2>${t('fmap.title')}</h2>
+        <p class="muted">${t('fmap.help')}</p>
+        <div data-fmap></div>
+        <div class="fmap-add"><label>${t('fmap.addExt')}<input name="newExt" placeholder=".txt" autocomplete="off" spellcheck="false"></label>
+          <button type="button" class="btn small" data-fmap-add>${t('fmap.add')}</button></div>
+        <div class="actions"><button class="btn primary">${t('common.save')}</button><button type="button" class="btn" data-reparse title="${esc(t('set.reparseTitle'))}">${t('set.reparse')}</button><a href="#/formats">${t('fmap.custom')}</a></div>
+        <ul class="issues"></ul>
+      </form>
+
       <form class="panel form" data-form="source">
         <h2>${t('set.source')}</h2>
-        <p class="muted">${t('set.sourceNow', { files: `<b data-count="files">${files}</b>`, strings: `<b data-count="strings">${strings}</b>` })} ${esc(fmt.hint)}</p>
-        ${filePicker(fmt)}
+        <p class="muted">${t('set.sourceNow', { files: `<b data-count="files">${files}</b>`, strings: `<b data-count="strings">${strings}</b>` })} ${t('fmap.uploadHint')}</p>
+        ${filePicker()}
         <label class="check"><input type="checkbox" name="replace"> ${t('set.replace')}</label>
         <div class="actions"><button class="btn primary">${t('set.upload')}</button>${files ? `<button type="button" class="btn" data-reparse title="${esc(t('set.reparseTitle'))}">${t('set.reparse')}</button>` : ''}</div>
+        <ul class="issues"></ul>
+      </form>
+
+      <form class="panel form" data-form="originals">
+        <h2>${t('orig.title')}</h2>
+        <p class="muted">${t('orig.help', { days: 30 })}</p>
+        <div class="orig-tools">
+          <input type="search" name="q" placeholder="${esc(t('orig.filter'))}" aria-label="${esc(t('orig.filter'))}" autocomplete="off">
+          <div class="side-sort orig-sort"></div>
+        </div>
+        <div data-orig><p class="muted">${t('app.loading')}</p></div>
+        <div class="orig-confirm" hidden></div>
+        <div class="actions"><button type="button" class="btn bad" data-orig-del-sel disabled>${t('orig.deleteSel', { n: 0 })}</button></div>
+        <div data-orig-trash></div>
         <ul class="issues"></ul>
       </form>
 
@@ -890,7 +1006,7 @@ async function renderSettings(slug, q = new URLSearchParams()) {
         <h2>${t('set.import')}</h2>
         <p class="muted">${t('set.importHelp')}</p>
         <label>${t('set.lang')}<select name="lang">${langOptions(false)}</select></label>
-        ${filePicker(fmt)}
+        ${filePicker(textExtensions(game.format_map))}
         <label class="check"><input type="checkbox" name="overwrite"> ${t('set.overwrite')}</label>
         <div class="actions"><button class="btn primary">${t('set.importBtn')}</button></div>
         <ul class="issues"></ul>
@@ -992,15 +1108,86 @@ async function renderSettings(slug, q = new URLSearchParams()) {
       }
     });
 
-  // Формат сохраняется сразу при выборе: от него зависит, какие файлы примет загрузка ниже.
-  forms.settings.format?.addEventListener('change', async (e) => {
-    try {
-      await api(`/games/${encodeURIComponent(slug)}/settings`, { method: 'POST', body: { format: e.target.value } });
-      toast(t('set.formatSaved'));
-      renderSettings(slug);
-    } catch (err) {
-      report(forms.settings, [['error', err.message]]);
+  // ---- Форматы файлов: таблица «расширение → формат» ----
+  let exts = extStats;
+  const extRow = (ext, info) => {
+    const inMap = Object.prototype.hasOwnProperty.call(game.format_map || {}, ext);
+    const sel = inMap ? game.format_map[ext] : '';
+    const stale = info && info.strings + info.files > 0 && info.parsed?.length && info.parsed.some((p) => p !== (info.format ?? RAW));
+    const fallback = (game.format_map || {})['*'] ?? game.format;
+    return `<tr data-ext="${esc(ext)}">
+      <td class="mono">${ext === '*' ? `* <span class="muted">${t('fmap.other')}</span>` : esc(ext)}</td>
+      <td class="num">${info ? info.files : '—'}</td>
+      <td class="num">${info ? info.strings : '—'}</td>
+      <td><select name="fmt_${esc(ext)}" aria-label="${esc(ext)}" title="${esc(sel && sel !== RAW ? fmtInfo(formats, sel).hint : '')}">${mapOptions(formats, sel, ext === '*' ? t('fmap.notSet') : t('fmap.byDefault', { name: fallback ? formatTitle(formats, fallback) : t('fmap.raw') }))}</select>
+        ${stale ? `<small class="fmap-stale">${t('fmap.stale')}</small>` : ''}</td>
+    </tr>`;
+  };
+  const renderFormatMap = () => {
+    const box = forms.formats.querySelector('[data-fmap]');
+    const byExt = Object.fromEntries(exts.map((x) => [x.ext, x]));
+    const list = [...new Set([...exts.map((x) => x.ext).filter(Boolean), ...Object.keys(game.format_map || {}).filter((k) => k !== '*')])].sort();
+    const noExt = byExt[''];
+    box.innerHTML = `<table class="fmap-table">
+      <thead><tr><th>${t('fmap.ext')}</th><th class="num">${t('fmap.files')}</th><th class="num">${t('fmap.strings')}</th><th>${t('fmap.format')}</th></tr></thead>
+      <tbody>${list.map((x) => extRow(x, byExt[x])).join('')}${extRow('*', null)}</tbody></table>
+      ${noExt ? `<p class="muted">${t('fmap.noExt', { n: noExt.files })}</p>` : ''}
+      ${list.length ? '' : `<p class="muted">${t('fmap.empty')}</p>`}`;
+  };
+  const refreshFormats = async () => {
+    const fresh = await api(`/games/${encodeURIComponent(slug)}`);
+    game.format_map = fresh.game.format_map;
+    exts = fresh.formats;
+    renderFormatMap();
+    if (forms.originals.dataset.loaded) await loadOrigLater();
+  };
+  // список оригиналов (ниже) перечитывается после загрузки и пересчёта
+  let loadOrigLater = async () => {};
+  renderFormatMap();
+  forms.formats.querySelector('[data-fmap-add]').addEventListener('click', () => {
+    const f = forms.formats;
+    let ext = f.newExt.value.trim().toLowerCase();
+    if (ext && !ext.startsWith('.')) ext = '.' + ext;
+    if (!/^\.[a-z0-9][a-z0-9_-]*(\.[a-z0-9_-]+)*$/.test(ext)) return report(f, [['error', t('fmap.badExt')]]);
+    if (!f.querySelector(`tr[data-ext="${CSS.escape(ext)}"]`)) {
+      const cands = formatsForExt(formats, ext);
+      game.format_map = { ...(game.format_map || {}), [ext]: cands[0]?.slug || RAW };
+      renderFormatMap();
     }
+    f.newExt.value = '';
+    report(f, []);
+  });
+  onSubmit('formats', async (f) => {
+    const format_map = {};
+    f.querySelectorAll('tr[data-ext]').forEach((tr) => {
+      const v = tr.querySelector('select').value;
+      if (v) format_map[tr.dataset.ext] = v;
+    });
+    const r = await api(`/games/${encodeURIComponent(slug)}/settings`, { method: 'POST', body: { format_map } });
+    await refreshFormats();
+    report(f, r.reparse ? [['warn', t('fmap.needReparse', { n: r.reparse })]] : [['ok', t('common.saved')]]);
+    f.querySelector('[data-reparse]')?.classList.toggle('primary', !!r.reparse);
+  });
+
+  // Предупреждение: в выбранной (или исходной) кодировке нет букв языка — предлагаем подходящие
+  const encWarn = (row) => {
+    const l = row.dataset.lang;
+    const chosen = row.querySelector('select').value;
+    const targets = chosen ? [chosen] : data.fileEncodings.map((x) => x.encoding);
+    const bad = targets.filter((e) => (data.encodingSupport[l] || []).includes(e));
+    const ok = data.encodingList.filter((e) => !(data.encodingSupport[l] || []).includes(e) && !e.startsWith('utf-'));
+    row.querySelector('.enc-warn').textContent = bad.length
+      ? t('enc.warn', { enc: bad.join(', '), lang: langName(l), suggest: [...ok.slice(0, 2), 'utf-8'].join(', ') })
+      : '';
+  };
+  forms.encodings.querySelectorAll('.enc-row').forEach((row) => {
+    encWarn(row);
+    row.querySelector('select').addEventListener('change', () => encWarn(row));
+  });
+  onSubmit('encodings', async (f) => {
+    const encodings = Object.fromEntries(game.languages.map((l) => [l, f.elements[`enc_${l}`].value]));
+    await api(`/games/${encodeURIComponent(slug)}/settings`, { method: 'POST', body: { encodings } });
+    report(f, [['ok', t('common.saved')]]);
   });
 
   onSubmit('info', async (f) => {
@@ -1016,7 +1203,7 @@ async function renderSettings(slug, q = new URLSearchParams()) {
     try {
       await api(`/games/${encodeURIComponent(slug)}/settings`, {
         method: 'POST',
-        body: { title: f.title.value, languages: parseLangs(f.languages.value), repo: f.repo.value, format: f.format?.value, force: f.dataset.force === '1' },
+        body: { title: f.title.value, languages: parseLangs(f.languages.value), repo: f.repo.value, force: f.dataset.force === '1' },
       });
     } catch (err) {
       if (err.status === 422 && f.dataset.force !== '1' && game.languages.some((l) => !parseLangs(f.languages.value).includes(l))) {
@@ -1030,10 +1217,11 @@ async function renderSettings(slug, q = new URLSearchParams()) {
   });
 
   onSubmit('source', async (f) => {
-    const files = await collectFiles(f, fmt);
-    if (!files.length) throw new Error(t('set.noFiles', { ext: fmt.ext.join(', ') }));
-    const total = { added: 0, changed: 0, removed: 0, unchanged: 0 };
+    const { files, skipped } = await collectFiles(f, { map: game.format_map || {}, formats });
+    if (!files.length) throw new Error(skipped.length ? t('fmap.tooBig', { list: skipped.join(', ') }) : t('set.noFiles', { ext: '' }));
+    const total = { added: 0, changed: 0, removed: 0, unchanged: 0, raw: 0 };
     const errors = [];
+    const assigned = {};
     const parts = batches(files);
     for (let i = 0; i < parts.length; i++) {
       report(f, [['warn', t('set.uploading', { i: i + 1, n: parts.length })]]);
@@ -1042,37 +1230,215 @@ async function renderSettings(slug, q = new URLSearchParams()) {
         method: 'POST',
         body: { files: parts[i], paths: last && f.replace.checked ? files.map((x) => x.path) : undefined },
       });
-      for (const k of Object.keys(total)) total[k] += r[k];
+      for (const k of Object.keys(total)) total[k] += r[k] || 0;
       errors.push(...r.errors);
+      Object.assign(assigned, r.formats || {});
     }
+    const newExts = Object.entries(assigned);
+    const rawExts = newExts.filter(([, v]) => v === RAW).map(([k]) => k);
+    const textFiles = files.filter((x) => !x.data);
     report(f, [
       ['ok', t('set.uploadDone', total)],
+      ...(total.raw ? [['ok', t('fmap.rawCount', { n: total.raw })]] : []),
+      ...(newExts.length ? [['ok', t('fmap.assigned', { list: newExts.map(([k, v]) => `${k} → ${formatTitle(formats, v)}`).join(', ') })]] : []),
+      ...(rawExts.length ? [['warn', t('fmap.rawNotice', { list: rawExts.join(', ') })]] : []),
+      ...(skipped.length ? [['warn', t('fmap.tooBig', { list: skipped.join(', ') })]] : []),
+      ...(textFiles.length ? [['ok', t('enc.detected', { list: encodingSummary(textFiles) })]] : []),
       ...errors.map((e) => ['error', e]),
     ]);
     toast(t('set.sourceUploaded'));
     const fresh = await api(`/games/${encodeURIComponent(slug)}/manage`);
     f.querySelector('[data-count=files]').textContent = fresh.files;
     f.querySelector('[data-count=strings]').textContent = fresh.strings;
+    await refreshFormats();
   });
 
-  forms.source.querySelector('[data-reparse]')?.addEventListener('click', async () => {
-    const f = forms.source;
-    busy(f, true);
-    try {
-      const r = await api(`/games/${encodeURIComponent(slug)}/reparse`, { method: 'POST' });
-      report(f, [['ok', t('set.reparsed', r)]]);
-      const fresh = await api(`/games/${encodeURIComponent(slug)}/manage`);
-      f.querySelector('[data-count=strings]').textContent = fresh.strings;
-    } catch (err) {
-      report(f, [['error', err.message]]);
-    } finally {
-      busy(f, false);
+  // «Пересчитать строки по формату»: заново разобрать сохранённые оригиналы по текущей карте форматов
+  for (const f of [forms.formats, forms.source]) {
+    f.querySelector('[data-reparse]')?.addEventListener('click', async () => {
+      busy(f, true);
+      try {
+        const r = await api(`/games/${encodeURIComponent(slug)}/reparse`, { method: 'POST' });
+        f.querySelector('[data-reparse]').classList.remove('primary');
+        const fresh = await api(`/games/${encodeURIComponent(slug)}/manage`);
+        forms.source.querySelector('[data-count=files]').textContent = fresh.files;
+        forms.source.querySelector('[data-count=strings]').textContent = fresh.strings;
+        await refreshFormats();
+        report(f, [['ok', t('set.reparsed', r)], ...r.errors.map((e) => ['error', e])]);
+      } catch (err) {
+        report(f, [['error', err.message]]);
+      } finally {
+        busy(f, false);
+      }
+    });
+  }
+
+  // ---- Оригинальные файлы: список, фильтр, сортировка, скачивание, удаление в корзину и возврат ----
+  const orig = { files: [], trash: [], days: 30, q: '', sort: { key: 'name', dir: 'asc' }, sel: new Set() };
+  const of = forms.originals;
+  const sizeFmt = (n) =>
+    n < 1024 ? new Intl.NumberFormat(getLocale(), { style: 'unit', unit: 'byte' }).format(n)
+      : new Intl.NumberFormat(getLocale(), { style: 'unit', unit: n < 1048576 ? 'kilobyte' : 'megabyte', maximumFractionDigits: 1 }).format(n / (n < 1048576 ? 1024 : 1048576));
+  const ORIG_SORTS = ['name', 'size', 'strings'];
+  const origVisible = () => {
+    const q = orig.q.toLowerCase();
+    const k = orig.sort.dir === 'asc' ? 1 : -1;
+    const val = (f) => (orig.sort.key === 'name' ? f.path.toLowerCase() : f[orig.sort.key]);
+    return orig.files
+      .filter((f) => !q || f.path.toLowerCase().includes(q) || String(f.format).toLowerCase().includes(q))
+      .sort((a, b) => (val(a) < val(b) ? -k : val(a) > val(b) ? k : a.path.localeCompare(b.path, undefined, { numeric: true })));
+  };
+  const renderOrig = () => {
+    of.querySelector('.orig-sort').innerHTML = ORIG_SORTS.map((k) => {
+      const title = t('orig.sort.' + k);
+      const on = orig.sort.key === k;
+      return `<button type="button" data-orig-sort="${k}" class="${on ? 'on' : ''}" title="${esc(t('side.sort', { col: title }))}">${title}${on ? (orig.sort.dir === 'asc' ? ' ↑' : ' ↓') : ''}</button>`;
+    }).join('');
+    const list = origVisible();
+    for (const p of [...orig.sel]) if (!orig.files.some((f) => f.path === p)) orig.sel.delete(p);
+    const allOn = list.length > 0 && list.every((f) => orig.sel.has(f.path));
+    of.querySelector('[data-orig]').innerHTML = !orig.files.length
+      ? `<p class="muted">${t('orig.none')}</p>`
+      : !list.length
+        ? `<p class="muted">${t('orig.noMatch')}</p>`
+        : `<div class="orig-scroll"><table class="fmap-table orig-table">
+          <thead><tr><th><input type="checkbox" data-orig-all ${allOn ? 'checked' : ''} aria-label="${esc(t('orig.selectAll'))}"></th><th>${t('orig.sort.name')}</th><th class="orig-fmt">${t('fmap.format')}</th><th class="orig-enc">${t('orig.colEnc')}</th><th class="num">${t('orig.sort.size')}</th><th class="num">${t('orig.sort.strings')}</th><th></th></tr></thead>
+          <tbody>${list
+            .map((f) => {
+              const i = f.path.lastIndexOf('/');
+              return `<tr data-path="${esc(f.path)}">
+                <td><input type="checkbox" data-orig-pick ${orig.sel.has(f.path) ? 'checked' : ''} aria-label="${esc(f.path)}"></td>
+                <td class="orig-path">${i >= 0 ? `<span class="dir">${esc(f.path.slice(0, i + 1))}</span>` : ''}${esc(f.path.slice(i + 1))}</td>
+                <td class="orig-fmt">${esc(f.format ? formatTitle(formats, f.format) : '—')}</td>
+                <td class="orig-enc mono">${f.data || f.encoding === 'binary' ? '—' : esc(f.encoding)}</td>
+                <td class="num">${sizeFmt(f.size)}</td>
+                <td class="num">${f.strings}</td>
+                <td class="orig-act"><button type="button" class="link" data-orig-dl title="${esc(t('orig.download'))}">${t('orig.download')}</button>
+                  <button type="button" class="link bad" data-orig-del>${t('orig.delete')}</button></td>
+              </tr>`;
+            })
+            .join('')}</tbody></table></div>`;
+    const selBtn = of.querySelector('[data-orig-del-sel]');
+    selBtn.disabled = !orig.sel.size;
+    selBtn.textContent = t('orig.deleteSel', { n: orig.sel.size });
+    const trash = of.querySelector('[data-orig-trash]');
+    trash.innerHTML = orig.trash.length
+      ? `<details class="orig-trash"><summary>${t('orig.trash', { n: orig.trash.length, days: orig.days })}</summary>
+          <ul class="mods">${orig.trash
+            .map((x) => `<li data-path="${esc(x.path)}"><span><span class="mono">${esc(x.path)}</span>
+              <span class="muted">${t('orig.deletedAt', { date: esc(new Date(x.deleted_at).toLocaleString(getLocale())), by: esc(x.deleted_by || '—') })}</span></span>
+              <button type="button" class="link" data-orig-restore>${t('orig.restore')}</button></li>`)
+            .join('')}</ul>
+          <div class="actions"><button type="button" class="btn small" data-orig-restore-all>${t('orig.restoreAll')}</button></div></details>`
+      : '';
+  };
+  const loadOrig = async () => {
+    const r = await api(`/games/${encodeURIComponent(slug)}/source/files`);
+    orig.files = r.files;
+    orig.trash = r.trash;
+    orig.days = r.trashDays;
+    of.dataset.loaded = '1';
+    renderOrig();
+  };
+  loadOrigLater = loadOrig;
+  const afterFilesChange = async () => {
+    const fresh = await api(`/games/${encodeURIComponent(slug)}/manage`);
+    forms.source.querySelector('[data-count=files]').textContent = fresh.files;
+    forms.source.querySelector('[data-count=strings]').textContent = fresh.strings;
+    await refreshFormats();
+  };
+  const restoreFiles = async (paths) => {
+    const r = await api(`/games/${encodeURIComponent(slug)}/source/restore`, { method: 'POST', body: { paths } });
+    await afterFilesChange();
+    return r;
+  };
+  const deleteFiles = async (paths) => {
+    const r = paths.length === 1
+      ? await api(`/games/${encodeURIComponent(slug)}/source?path=${encodeURIComponent(paths[0])}`, { method: 'DELETE' })
+      : await api(`/games/${encodeURIComponent(slug)}/source/delete`, { method: 'POST', body: { paths } });
+    paths.forEach((p) => orig.sel.delete(p));
+    await afterFilesChange();
+    toast(t('orig.deleted', { files: r.deleted.length, strings: r.strings }), { label: t('undo.deleteFiles'), run: () => restoreFiles(r.deleted) });
+  };
+  // Подтверждение прямо в панели (без window.confirm)
+  const askDelete = (paths) => {
+    const box = of.querySelector('.orig-confirm');
+    const strings = orig.files.filter((f) => paths.includes(f.path)).reduce((n, f) => n + f.strings, 0);
+    box.hidden = false;
+    box.innerHTML = `<span>${t('orig.confirm', { n: paths.length, strings, name: esc(paths[0]) })}</span>
+      <button type="button" class="btn small bad" data-orig-yes>${t('orig.confirmYes')}</button>
+      <button type="button" class="btn small" data-orig-no>${t('common.cancel')}</button>`;
+    box.querySelector('[data-orig-no]').onclick = () => { box.hidden = true; box.innerHTML = ''; };
+    box.querySelector('[data-orig-yes]').onclick = async () => {
+      busy(of, true);
+      try {
+        await deleteFiles(paths);
+        box.hidden = true;
+        box.innerHTML = '';
+        report(of, []);
+      } catch (err) {
+        report(of, [['error', err.message]]);
+      } finally {
+        busy(of, false);
+        renderOrig();
+      }
+    };
+    box.scrollIntoView({ block: 'nearest' });
+  };
+  const downloadOriginal = async (path) => {
+    const token = store.get('token');
+    const res = await fetch(`${API}/games/${encodeURIComponent(slug)}/source/raw?path=${encodeURIComponent(path)}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || t('app.error', { status: res.status }));
+    const url = URL.createObjectURL(await res.blob());
+    const a = Object.assign(document.createElement('a'), { href: url, download: path.split('/').pop() });
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  };
+  of.addEventListener('submit', (e) => e.preventDefault());
+  of.q.addEventListener('input', () => {
+    orig.q = of.q.value.trim();
+    renderOrig();
+  });
+  of.addEventListener('change', (e) => {
+    if (e.target.matches('[data-orig-all]')) {
+      for (const f of origVisible()) e.target.checked ? orig.sel.add(f.path) : orig.sel.delete(f.path);
+      renderOrig();
+    } else if (e.target.matches('[data-orig-pick]')) {
+      const p = e.target.closest('tr').dataset.path;
+      e.target.checked ? orig.sel.add(p) : orig.sel.delete(p);
+      renderOrig();
     }
   });
+  of.addEventListener('click', async (e) => {
+    const sortBtn = e.target.closest('[data-orig-sort]');
+    if (sortBtn) {
+      const k = sortBtn.dataset.origSort;
+      orig.sort = orig.sort.key === k ? { key: k, dir: orig.sort.dir === 'asc' ? 'desc' : 'asc' } : { key: k, dir: k === 'name' ? 'asc' : 'desc' };
+      return renderOrig();
+    }
+    const path = e.target.closest('[data-path]')?.dataset.path;
+    try {
+      if (e.target.closest('[data-orig-del]')) askDelete([path]);
+      else if (e.target.closest('[data-orig-del-sel]')) askDelete([...orig.sel]);
+      else if (e.target.closest('[data-orig-dl]')) await downloadOriginal(path);
+      else if (e.target.closest('[data-orig-restore]') || e.target.closest('[data-orig-restore-all]')) {
+        const paths = e.target.closest('[data-orig-restore-all]') ? orig.trash.map((x) => x.path) : [path];
+        const r = await restoreFiles(paths);
+        toast(t('orig.restored', { files: r.files, strings: r.strings }));
+        report(of, [...(r.skipped.length ? [['warn', t('orig.skipped', { list: r.skipped.join(', ') })]] : []), ...r.errors.map((x) => ['error', x])]);
+      }
+    } catch (err) {
+      report(of, [['error', err.message]]);
+    }
+  });
+  loadOrig().catch((err) => report(of, [['error', err.message]]));
 
   onSubmit('translation', async (f) => {
-    const files = await collectFiles(f, fmt);
-    if (!files.length) throw new Error(t('set.noFiles', { ext: fmt.ext.join(', ') }));
+    // готовый перевод — только текстовые файлы переводимых форматов (картинки и «как есть» пропускаются)
+    const { files } = await collectFiles(f, { map: game.format_map || {}, formats, translation: true });
+    if (!files.length) throw new Error(t('set.noFiles', { ext: textExtensions(game.format_map).join(', ') }));
     const total = { imported: 0, skipped: 0, unknown: 0 };
     for (const part of batches(files)) {
       const r = await api(`/games/${encodeURIComponent(slug)}/translation`, {
@@ -1135,14 +1501,20 @@ async function renderSettings(slug, q = new URLSearchParams()) {
   });
 }
 
-function filePicker(fmt) {
+/** Расширения, которые в карте игры переводятся (не «как есть») — для выбора файлов готового перевода. */
+const textExtensions = (map) => Object.entries(map || {}).filter(([k, v]) => k !== '*' && v !== RAW).map(([k]) => k).sort();
+
+/** Выбор файлов. accept — только эти расширения (для готового перевода); для исходников — любые файлы. */
+function filePicker(accept = []) {
   return `
     <div class="picker">
-      <label class="btn small">${t('pick.files')}<input type="file" name="files" multiple accept="${fmt.ext.join(',')}" hidden></label>
+      <label class="btn small">${t('pick.files')}<input type="file" name="files" multiple ${accept.length ? `accept="${esc(accept.join(','))}"` : ''} hidden></label>
       <label class="btn small">${t('pick.folder')}<input type="file" name="folder" webkitdirectory hidden></label>
       <span class="muted picked">${t('pick.none')}</span>
     </div>
-    <label>${t('pick.prefix')}<input name="prefix" placeholder="${esc(fmt.ext.includes('.xml') ? 'Core/Keyed' : t('pick.prefixPh'))}">
+    <label>${t('enc.pick')}<select name="encoding"><option value="">${t('enc.auto')}</option>${ENCODINGS.map((e) => `<option value="${e}">${e}</option>`).join('')}</select>
+      <small>${t('enc.pickHint')}</small></label>
+    <label>${t('pick.prefix')}<input name="prefix" placeholder="${esc(t('pick.prefixPh'))}">
       <small>${t('pick.prefixHint')}</small></label>`;
 }
 
@@ -1156,24 +1528,60 @@ document.addEventListener('change', (e) => {
   if (label) label.textContent = n ? t('pick.count', { n }) : t('pick.none');
 });
 
-async function collectFiles(form, fmt) {
+/** Предел одного файла «как есть» (картинки и т. п.): тело запроса на Vercel ≤ ~4.5 МБ, байты идут в base64. */
+const RAW_MAX_BYTES = 3_000_000;
+
+function toBase64(bytes) {
+  let s = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+
+/**
+ * Прочитать выбранные файлы. Формат каждого определяет сервер по расширению; здесь решаем только, как отправить:
+ * текстом (с кодировкой) или байтами — двоичные файлы, расширения «как есть» в карте игры и расширения,
+ * которых не знает ни один формат (их сервер не переводит). translation — только текстовые файлы переводимых форматов.
+ * Возвращает { files, skipped } — skipped: слишком большие файлы «как есть».
+ */
+async function collectFiles(form, { map, formats, translation = false }) {
   const prefix = form.prefix.value.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
-  const out = [];
+  const files = [];
+  const skipped = [];
   const add = async (file, rel) => {
-    if (fmt.ext.length && !fmt.ext.some((x) => file.name.toLowerCase().endsWith(x))) return;
     const path = [prefix, rel].filter(Boolean).join('/');
-    out.push({ path, content: await file.text() });
+    const ext = extOf(path);
+    const mapped = mappedFormat(map, path);
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const binary = looksBinary(bytes);
+    const raw = binary || (mapped !== undefined ? mapped === RAW : !formatsForExt(formats, ext).length);
+    if (translation && (binary || mapped === RAW)) return;
+    if (raw && !translation) {
+      if (bytes.length > RAW_MAX_BYTES) return skipped.push(path);
+      files.push({ path, content: '', data: toBase64(bytes) });
+      return;
+    }
+    // Кодировка: выбранная вручную или определённая по байтам (BOM / корректный UTF-8 / однобайтовая).
+    // Переводы строк не трогаем — файл соберётся обратно теми же байтами.
+    const encoding = form.encoding?.value || detectEncoding(bytes);
+    files.push({ path, content: decodeBytes(bytes, encoding), encoding });
   };
   for (const f of form.files.files) await add(f, f.name);
   for (const f of form.folder.files) await add(f, (f.webkitRelativePath || f.name).split('/').slice(1).join('/') || f.name);
-  return out;
+  return { files, skipped };
+}
+
+/** «utf-8 (12), windows-1251 (3)» — какие кодировки определились у загруженных файлов. */
+function encodingSummary(files) {
+  const n = {};
+  for (const f of files) n[f.encoding] = (n[f.encoding] || 0) + 1;
+  return Object.entries(n).sort((a, b) => b[1] - a[1]).map(([e, k]) => `${e} (${k})`).join(', ');
 }
 
 function batches(files, limit = 3_000_000) {
   const out = [[]];
   let size = 0;
   for (const f of files) {
-    const s = new Blob([f.content]).size + f.path.length + 32;
+    const s = (f.data ? f.data.length : new Blob([f.content]).size) + f.path.length + 32;
     if (size + s > limit && out.at(-1).length) {
       out.push([]);
       size = 0;
@@ -1210,7 +1618,7 @@ function makeZip(files) {
   let offset = 0;
   for (const f of files) {
     const name = enc.encode(f.path);
-    const data = enc.encode(f.content);
+    const data = f.bytes ?? enc.encode(f.content);
     const crc = crc32(data);
     const local = new DataView(new ArrayBuffer(30));
     local.setUint32(0, 0x04034b50, true);
@@ -1251,9 +1659,10 @@ document.addEventListener('click', async (e) => {
     if (el.dataset.act === 'download') {
       el.disabled = true;
       const { slug, lang } = el.dataset;
-      const r = await api(`/games/${encodeURIComponent(slug)}/export?lang=${encodeURIComponent(lang)}`);
+      // binary=1: файлы уже в нужной кодировке (с BOM, если он есть) — в архив кладём ровно эти байты
+      const r = await api(`/games/${encodeURIComponent(slug)}/export?lang=${encodeURIComponent(lang)}&binary=1`);
       if (!r.files.length) return toast(t('dl.none'));
-      const url = URL.createObjectURL(makeZip(r.files.map((f) => ({ path: `${lang}/${f.path}`, content: f.content }))));
+      const url = URL.createObjectURL(makeZip(r.files.map((f) => ({ path: `${lang}/${f.path}`, bytes: Uint8Array.from(atob(f.data), (c) => c.charCodeAt(0)) }))));
       const a = Object.assign(document.createElement('a'), { href: url, download: `${slug}-${lang}.zip` });
       document.body.append(a);
       a.click();
@@ -1677,7 +2086,8 @@ new MutationObserver(() => document.querySelectorAll('[data-lp]:not([data-ready]
 let overview = null; // { slug, game, stats }
 
 async function renderOverview(slug) {
-  const { game, stats, canManage, status } = await api(`/games/${encodeURIComponent(slug)}`);
+  const { game, stats, canManage, status, moderates, formats: extFormats } = await api(`/games/${encodeURIComponent(slug)}`);
+  const fmtList = await loadFormats().catch(() => []);
   const credits = Object.fromEntries(
     await Promise.all(game.languages.map(async (l) => [l, await api(`/games/${encodeURIComponent(slug)}/credits?lang=${encodeURIComponent(l)}`).catch(() => null)])),
   );
@@ -1691,18 +2101,24 @@ async function renderOverview(slug) {
     .map((l) => {
       const st = stats.find((x) => x.lang === l) || { approved: 0, voting: 0, total: 0 };
       const p = pct(st.approved, st.total);
-      return `<div class="ov-lang" data-lang="${esc(l)}">
-        <a class="ov-name" href="${href(slug, l)}"><b>${esc(langName(l))}</b> <span class="muted mono">${esc(l)}</span></a>
+      return `<div class="ov-lang" data-lang="${esc(l)}" data-rev-host>
+        <span class="ov-name"><a href="${href(slug, l)}"><b>${esc(langName(l))}</b> <span class="muted mono">${esc(l)}</span></a>${
+          canManage
+            ? `<small class="enc-label mono muted" title="${esc(t('enc.output', { enc: game.encodings?.[l] || game.source_encoding || 'utf-8' }))}">${esc(game.encodings?.[l] || game.source_encoding || 'utf-8')}${game.encodings?.[l] ? '' : ` · ${t('enc.asSourceShort')}`}</small>`
+            : ''
+        }</span>
         <span class="ov-progress"><span class="bar"><i style="width:${p}%"></i></span><span class="pct">${p}%</span></span>
         <span class="ov-count muted">${st.approved}/${st.total}${st.voting ? ` <span class="vcount" title="${esc(t('ov.withVariants', { n: st.voting }))}">+${st.voting}</span>` : ''}</span>
-        ${stageChip(status?.[l]?.status)}
+        <span class="ov-stage">${stageChip(status?.[l]?.status)}<small class="rev-label">${t('rev.label', { n: status?.[l]?.revision ?? 1 })}</small></span>
         <span class="ov-actions">
           <a class="btn small primary" href="${href(slug, l)}">${t('ov.translate')}</a>
           ${gh ? `<a class="btn small" href="${esc(gh)}/releases?q=${encodeURIComponent(l + '-')}&expanded=true" target="_blank" rel="noopener" title="${esc(t('ov.downloadTitle', { lang: langName(l) }))}">${t('ov.download')}</a>` : ''}
           ${canManage && game.repo ? `<a class="btn small" href="#/g/${encodeURIComponent(slug)}/settings?publish=${encodeURIComponent(l)}" title="${esc(t('pub.publishLangTitle', { lang: langName(l) }))}">${t('pub.publishLang')}</a>` : ''}
+          ${moderates?.[l] && !snapshot.on ? revisionButton(slug, l, st.approved + (st.stale ?? 0), status?.[l]?.status || 'open') : ''}
           ${canManage ? `<button type="button" class="link" data-ov-remove="${esc(l)}" title="${esc(t('lp.remove', { lang: langName(l) }))}">×</button>` : ''}
         </span>
         <div class="ov-confirm" hidden></div>
+        <div class="rev-box" hidden></div>
       </div>`;
     })
     .join('');
@@ -1722,6 +2138,7 @@ async function renderOverview(slug) {
       <div class="hero-body">
         <h1>${esc(game.title)}</h1>
         <p class="muted">${t('ov.source', { lang: esc(langName(game.source_lang)) })} · ${t('home.strings', { n: stats[0]?.total ?? 0 })}</p>
+        ${formatsLine(extFormats, fmtList)}
         ${game.description ? `<p class="hero-desc">${esc(game.description)}</p>` : ''}
         <div class="actions">
           ${(game.links || []).map(linkBtn).join('')}
@@ -1739,6 +2156,16 @@ async function renderOverview(slug) {
       <h2>${t('ov.credits')}</h2>
       ${creditRows ? `<ul class="ov-credits">${creditRows}</ul>` : `<p class="muted">${t('ov.noCredits')}</p>`}
     </section>`;
+}
+
+/** Тихая строка «.xml → RimWorld · .gpc → Gunpoint · .png — как есть» на странице игры. */
+function formatsLine(exts = [], list = []) {
+  const used = exts.filter((x) => x.ext && x.format && x.format !== RAW);
+  const raw = exts.filter((x) => x.ext && x.format === RAW).map((x) => x.ext);
+  if (!used.length && !raw.length) return '';
+  const parts = used.map((x) => `<span class="mono">${esc(x.ext)}</span> → ${esc(formatTitle(list, x.format))}`);
+  if (raw.length) parts.push(`<span class="mono">${esc(raw.join(', '))}</span> — ${esc(t('fmap.rawShort'))}`);
+  return `<p class="muted ov-formats" title="${esc(t('fmap.title'))}">${parts.join(' · ')}</p>`;
 }
 
 async function saveLanguages(languages, force = false) {
