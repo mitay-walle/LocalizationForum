@@ -46,14 +46,22 @@
 ## Как добавить свою игру
 
 1. Войдите и нажмите **«+ Новая игра»**: название, адрес, языки оригинала и перевода.
-2. **Выберите формат файлов.** Есть встроенные (XML RimWorld, JSON и другие). Если вашего нет — в разделе **«Форматы файлов»** можно описать свой построчный формат без программирования и сразу проверить его на настоящем файле.
+2. **Формат выбирать не нужно** — он определяется у каждого файла по расширению при загрузке: `.xml` → RimWorld, `.json` → JSON, `.gpc` → Gunpoint, `.txt` → текст построчно; картинки и прочие незнакомые файлы не переводятся и попадают в перевод как есть. Поменять формат для расширения можно в «Настройках игры» → **«Форматы файлов»** (потом нажмите «Пересчитать строки по формату» — утверждённые переводы сохранятся). Если вашего формата нет — в разделе **«Форматы файлов»** на главной можно описать свой построчный формат без программирования и сразу проверить его на настоящем файле.
 3. На странице игры (клик по карточке на главной) видно описание, ссылки на Steam и сайт, прогресс по языкам, переводчиков и кнопки релизов. Описание, ссылки и обложку можно поменять в «Настройках игры» → «Об игре».
-4. В **«Настройках игры»** загрузите оригинальные файлы (по одному или целой папкой). Строки появятся на сайте, и можно звать переводчиков.
+4. В **«Настройках игры»** загрузите оригинальные файлы (по одному или целой папкой). Строки появятся на сайте, и можно звать переводчиков. Лишний файл можно удалить в списке **«Оригинальные файлы»** (там же — скачать оригинал): он 30 дней лежит в корзине и возвращается вместе с переводами.
 5. Там же — модераторы по языкам, правила проверки, импорт уже готового перевода и кнопка **«Опубликовать в GitHub»**: она выкладывает перевод в репозиторий игры и выпускает релизы для каждого языка.
 
 ### Как выпустить перевод одного языка
 
 Обновился, например, только украинский перевод? Откройте страницу игры и в строке языка нажмите **«Опубликовать»** (или в «Настройках игры» → «Опубликовать в GitHub» отметьте нужные языки галочками). Укажите версию — появится релиз с тегом вида `uk-1.1`. В репозиторий запишется только папка отмеченного языка (и общие `source/`, `game.json`, README): **остальные языки в репозитории не изменятся**. Если релиз с такой версией у какого-то языка уже есть, остальные всё равно выпустятся, а сайт покажет итог по каждому языку.
+
+### Новая ревизия
+
+Когда перевод нужно вычитать заново (вышло обновление игры, сменилась терминология), модератор языка нажимает **«Новая ревизия»** на странице перевода или игры. Все утверждения снимаются, но их тексты остаются вариантами с пометкой «было утверждено в ревизии N» — переутвердить хорошую строку можно в один клик. Можно сразу перевести язык на этап «Апрув»; по ошибке — «Отменить», пока ничего не утвердили заново.
+
+### Кодировка
+
+Кодировку файлов выбирать обычно не нужно: сайт определяет её по оригиналам при загрузке (UTF-8, UTF-8/UTF-16 с BOM, иначе windows-1252) и выгружает перевод в той же кодировке, байт в байт. Если после загрузки буквы превратились в «кракозябры» — загрузите файлы ещё раз, выбрав кодировку вручную. Если в кодировке оригинала нет букв вашего языка (например, игра в windows-1252, а перевод русский), выберите для языка другую кодировку в «Настройках игры» → «Кодировка файлов» — сайт подскажет подходящую.
 
 ### Как добавить язык перевода
 
@@ -61,7 +69,13 @@
 
 ## ИИ-ассистенты (MCP)
 
-К форуму можно подключить Claude или другой ИИ-ассистент по протоколу MCP: он найдёт строки, предложит переводы и проголосует от вашего имени, а его варианты получат значок «ИИ». Адрес сервера и инструкции — в меню ⚙ → «Токены и подключение MCP». Решение по-прежнему принимают люди-модераторы.
+К форуму можно подключить Claude или другой ИИ-ассистент по протоколу MCP. Адрес сервера и инструкции — в меню ⚙ → «Токены и подключение MCP». Ассистент действует от вашего имени и с вашими правами (баны и лимиты те же):
+
+- **переводить:** искать строки, проверять и предлагать переводы (варианты получают значок «ИИ»), голосовать; модератору — утверждать и менять этап перевода;
+- **заводить и вести игры:** создать игру, поменять название, описание, ссылки, обложку и репозиторий, добавить или убрать язык;
+- **работать с файлами:** загрузить оригиналы (текст и картинки), посмотреть список, удалить и вернуть из корзины, задать формат по расширению и пересчитать строки.
+
+Решение по-прежнему принимают люди-модераторы.
 
 ---
 
@@ -70,11 +84,11 @@
 **LocalizationForum** is a free, community-driven game translation site in the spirit of Zone of Games: people propose translations for each line, vote for the best ones, and moderators approve the final text. Site: **https://localization-forum.vercel.app/** (switch the interface language in the header). If it is down, a read-only mirror updated daily lives at **https://mitay-walle.github.io/LocalizationForum/**.
 
 - **Take part:** sign in with GitHub, pick a game and a language, propose your variant or vote ▲ for the best one (one vote per line — voting for another variant moves your vote).
-- **Stages:** *Group translation* (everyone proposes and votes) → *Review* (moderators approve) → *Done* (closed).
+- **Stages:** *Group translation* (everyone proposes and votes) → *Review* (moderators approve) → *Done* (closed). *New revision* clears all approvals of a language for a fresh review (texts stay as variants).
 - **Get the translation:** open the game's GitHub **Releases**, take the newest release for your language (tag `<language>-<version>`, e.g. `ru-1.0`), download the zip from **Assets** and unpack it over the game folder. Don't download the repository source.
-- **Add your game:** *+ New game* → choose or describe the file format → upload the original files in *Game settings* → *Publish to GitHub* when ready — tick only the languages you want to release; the others in the repository stay untouched. Add more translation languages on the game page (*+ Add language*).
+- **Add your game:** *+ New game* → choose or describe the file format → upload the original files in *Game settings* → *Publish to GitHub* when ready (file encodings are detected from the originals and kept byte-for-byte; pick another one per language in *Game settings → File encoding* if needed) — tick only the languages you want to release; the others in the repository stay untouched. Add more translation languages on the game page (*+ Add language*).
 - **Rules:** up to 3 own variants per line (30 in total per line) and 500 per hour; language moderators are exempt. Spammers can be banned per game by its managers or site-wide by admins — banned users can only read.
-- **AI assistants:** connect Claude or another assistant via MCP (⚙ → Tokens and MCP connection); its suggestions are marked “AI”, and humans still approve.
+- **AI assistants:** connect Claude or another assistant via MCP (⚙ → Tokens and MCP connection). With your permissions it can find, check and propose translations (marked “AI”), vote, and — for games you manage — create games, edit their info and languages, upload / list / delete / restore original files and set file formats; humans still approve.
 
 ---
 
