@@ -14,7 +14,7 @@ GitHub Pages (site/)  ──чтение/запись──▶  Vercel Function 
 - **API** — одна функция Vercel на [Hono](https://hono.dev) (`src/app.ts`), регион `fra1`.
 - **БД** — Postgres (Neon, бесплатный тариф). Миграции применяются автоматически при каждом деплое.
 - **Вход** — GitHub OAuth. Токен GitHub не хранится, сессия — подписанный JWT.
-- **Форматы игр** — `src/formats/`: `rimworld` (Keyed/DefInjected XML), `json`, `json-nested`. Новый формат = файл с `parse`/`serialize`.
+- **Форматы файлов** — `src/formats/`: `rimworld` (Keyed/DefInjected XML), `json`, `json-nested`, построчные (пресеты `gunpoint`, `properties`, `plain-lines` и пользовательские из `custom_formats`). Формат — у каждого файла свой, по расширению (см. «Форматы по файлам»). Новый формат = файл с `parse`/`serialize`.
 - **Проверки варианта** — `src/validate.ts`: плейсхолдеры `{0}`/`{PAWN_x}`/`%d`, теги `<color>`/`[b]`, `\n` + правила языка из `rules/<lang>.json` репо игры.
 
 ## Развёртывание (один раз)
@@ -32,7 +32,7 @@ GitHub Pages (site/)  ──чтение/запись──▶  Vercel Function 
 
 ## Добавить игру
 
-**С сайта** (проще): войти → «+ Новая игра» → указать название, формат и языки → в «Настройках игры» загрузить оригинальные файлы (файлы или целую папку). Там же: языки, импорт готового перевода, модераторы, правила проверок. Создатель игры получает права на все её языки. Скачать перевод .zip можно со страницы перевода.
+**С сайта** (проще): войти → «+ Новая игра» → указать название и языки → в «Настройках игры» загрузить оригинальные файлы (файлы или целую папку). Там же: языки, импорт готового перевода, модераторы, правила проверок. Создатель игры получает права на все её языки. Скачать перевод .zip можно со страницы перевода.
 
 **Через репозиторий игры** (если перевод должен коммититься в GitHub и выходить релизами):
 
@@ -71,9 +71,15 @@ npm run typecheck
 | POST/DELETE | `/api/variants/:id/vote` — один голос на строку+язык: POST снимает голос пользователя с других вариантов строки и возвращает их id в `cleared` | вошедшие |
 | DELETE | `/api/variants/:id` | автор / модератор |
 | POST/DELETE | `/api/strings/:id/approve` `{lang, variantId \| text}` | модератор |
-| POST | `/api/games` `{slug, title, format, sourceLang, languages, repo?, description?, links?, cover_url?}` | вошедшие (создатель → модератор `*`) |
+| POST | `/api/games` `{slug, title, sourceLang, languages, format?, format_map?, repo?, description?, links?, cover_url?}` | вошедшие (создатель → модератор `*`) |
 | GET | `/api/games/:slug/manage` | модератор `*` / админ |
-| POST | `/api/games/:slug/settings` `{title?, languages?, force?, repo?, rules?, description?, links?, cover_url?}` | модератор `*` / админ |
+| POST | `/api/games/:slug/settings` `{title?, languages?, force?, repo?, rules?, description?, links?, cover_url?, encodings?, format?, format_map?}` | модератор `*` / админ |
+| POST | `/api/games/:slug/reparse` — заново разобрать сохранённые оригиналы по текущей карте форматов | модератор `*` / админ |
+| GET | `/api/games/:slug/source/files` — оригиналы `{files: [{path, format, encoding, size, strings}], trash: [{path, format, size, deleted_at, deleted_by}], trashDays}` | модератор `*` / админ |
+| GET | `/api/games/:slug/source/raw?path=` — оригинал байт в байт (`attachment`) | модератор `*` / админ |
+| DELETE | `/api/games/:slug/source?path=` — удалить один оригинал (в корзину) | модератор `*` / админ, не забаненный |
+| POST | `/api/games/:slug/source/delete` `{paths}` или `{prefix}` → `{deleted, files, strings}` | модератор `*` / админ, не забаненный |
+| POST | `/api/games/:slug/source/restore` `{paths}` → `{restored, files, strings, skipped, errors}` | модератор `*` / админ, не забаненный |
 | POST | `/api/games/:slug/source` `{files, paths?}` | модератор `*` / админ |
 | POST | `/api/games/:slug/translation` `{lang, files, overwrite?}` | модератор `*` / админ |
 | POST | `/api/games/:slug/moderators` `{login, lang, remove?}` | модератор `*` / админ |
@@ -99,6 +105,42 @@ Neon засыпает через 5 минут простоя, и каждое п
 3. **Зеркало только для чтения на GitHub Pages.** `scripts/snapshot.mjs` раз в сутки (и при изменении сайта) сохраняет анонимные ответы API в `site/data/` (`pages.yml`). Если запрос на чтение к API не удался (сеть, 8 с тайм-аут, 5xx, 402, 429), сайт показывает плашку «сохранённая копия от …» и читает снимок: на github.io — `./data/`, с Vercel — `https://mitay-walle.github.io/LocalizationForum/data/` (можно переопределить `window.FORUM_SNAPSHOT` в `config.js`). Фильтры, поиск и файлы строк работают по снимку локально, запись выключена. Пока API отвечает, к снимку нет ни одного запроса.
 
 Снимок вручную: `FORUM_API=http://localhost:3000/api node scripts/snapshot.mjs /tmp/snap`. Готовый `pages.yml` лежит и в `docs/pages.yml.new` — на случай, если файл в `.github/workflows` удобнее обновить через веб-редактор GitHub.
+
+## Ревизии перевода
+
+Миграция `009_revisions.sql`: `language_status.revision` (с 1) и `approved_history` (архив утверждений с номером ревизии).
+
+- `POST /api/games/:slug/revision {lang, stage?: 'open'|'review'}` — модератор языка / управляющий / админ, не забаненный. В одной транзакции: тексты утверждений без варианта становятся вариантами (автор — утвердивший модератор, `ai=false`), все утверждения языка копируются в `approved_history` (с `variant_id`) и удаляются, `revision + 1`, этап — `stage` или прежний. На этапе «Готово» без `stage` — 422. Ответ `{revision, archived, stage, previousStage}`.
+- `POST /api/games/:slug/revision/undo {lang, stage?}` — вернуть утверждения прошлой ревизии и (если передан) этап; 409, если ревизия первая или в новой уже что-то утверждено.
+- Номер ревизии: `GET /games/:slug` → `status[lang].revision`, `/strings` → `revision`; у вариантов `was_approved_rev` — последняя ревизия, в которой этот текст был утверждён (бейдж на карточке). MCP только читает ревизию (`find_strings.revision`, `was_approved_in_revision`). Заметки к релизу: «версия X, ревизия N». Экспорт после новой ревизии — по текущим правилам: неутверждённые строки выгружаются текстом оригинала.
+
+## Кодировки файлов
+
+- **Определение** — в браузере при загрузке (`site/encoding.js`, его же используют тесты): BOM UTF-8 → `utf-8-bom`, BOM UTF-16 → `utf-16le-bom` / `utf-16be-bom`, корректный UTF-8 → `utf-8`, иначе догадка `windows-1252`; в форме загрузки кодировку можно выбрать вручную. Файл декодируется `TextDecoder`, переводы строк (CRLF) не трогаются; в API уходит `{path, content, encoding}`. Скрипт репо игры (`game-template/scripts/forum.mjs`) определяет так же (`FORUM_SOURCE_ENCODING` — для однобайтовых не-windows-1252).
+- **Хранение** (миграция `008_encodings.sql`): `source_files.encoding` — у каждого оригинала (для всех форматов); `games.encodings` — `{язык: кодировка}` для выгрузки, нет языка — «как в оригинале» (кодировка каждого файла); `games.source_encoding` — самая частая, для информации.
+- **Выгрузка**: `exportLanguage` отдаёт у каждого файла `encoding` (настройка языка или кодировка оригинала); у `.xml` атрибут `encoding` в декларации приводится к ней. `GET /api/games/:slug/export?lang=…&binary=1` — готовые байты в base64 (`data`), с BOM; их используют zip на сайте, `forum.mjs export` и релизы. «Опубликовать в GitHub» пишет UTF-8 без BOM текстом, остальное — через `POST /git/blobs {encoding: 'base64'}` и `sha` в дереве; оригиналы в `source/` — в их собственной кодировке. Кодирование — `iconv-lite` (чистый JS), `src/encoding.ts`.
+- **Проверка**: `checkText` добавляет ошибку, если в тексте есть символы, которых нет в целевой кодировке файла для языка (только неюникодные кодировки): «Символ «ё» нельзя записать в кодировке windows-1252 — выберите другую кодировку в настройках игры». `GET /manage` отдаёт `fileEncodings` и `encodingSupport` (для каждого языка — кодировки, в которых нельзя записать его характерные буквы) — по ним настройки показывают предупреждение и подсказку.
+- Поддерживаются: `utf-8`, `utf-8-bom`, `utf-16le-bom`, `utf-16be-bom`, `windows-1252`, `windows-1251`, `windows-1250`, `iso-8859-1`, `koi8-r`, `shift_jis`, `gb18030`, `big5`, `euc-kr`. Настройка: `POST /settings {encodings: {ru: "utf-8"}}` (передаётся целиком, пустое значение — «как в оригинале»).
+
+## Форматы по файлам
+
+Формат выбирается у каждого файла по расширению (миграция `010_format_map.sql`):
+
+- **`games.format_map`** — `{".xml": "rimworld", ".gpc": "gunpoint", ".png": "-"}`; ключи — расширение в нижнем регистре с точкой или `"*"` (все остальные), значения — slug формата или `"-"` (не переводить, копировать как есть). Разрешение (`fileFormat` в `src/formats/index.ts`): расширение → `"*"` → `games.format` (формат по умолчанию — только для старых игр и файлов без расширения; у новых игр пустой).
+- **Автоподбор** (`prepareFiles` в `src/sync.ts`): расширения, которых нет в карте (и нет `"*"`), получают формат при загрузке — кандидаты из объявленных расширений (`BUILTIN.extensions`, `config.extensions` построчных); `games.format` проверяется первым; берётся первый, кто находит строки и собирает образцы этой пачки обратно в то же самое (так вложенный `.json` получает `json-nested`, плоский — `json`), иначе — нашедший больше строк; никто не нашёл строк или кандидатов нет — `"-"`. Новые записи дописываются в карту и возвращаются в ответе загрузки как `formats`; `raw` — число файлов «как есть».
+- **`source_files.format`** — каким форматом файл разобран при последней загрузке. Экспорт, `checkText` (проверка варианта и MCP `check_translation`) и импорт готового перевода берут его, а не карту: смена карты в настройках ничего не ломает до `POST /reparse`. `POST /settings {format_map}` (карта целиком) возвращает `reparse` — сколько оригиналов разобрано не тем форматом; `GET /games/:slug` → `formats: [{ext, files, strings, format, parsed[]}]` (таблица в настройках, строка «форматы» на странице игры), `game.format_map` (MCP `get_game`).
+- **Пересчёт** (`/reparse`) прогоняет все `source_files` через `importSource`: строки сопоставляются по `(file, key)`, утверждения остаются там, где ключ и `source_hash` совпали; строки файлов, ставших `"-"`, помечаются `removed` (утверждения хранятся и вернутся при обратной смене).
+- **Двоичные и «как есть» файлы**: браузер (и `forum.mjs`) шлёт байтами в `data` (base64) файлы, которые похожи на двоичные (`looksBinary`: нулевой байт в первых 8 КБ, кроме UTF-16 с BOM), расширения с `"-"` и расширения, которых не знает ни один формат. Хранятся в `source_files.data` (bytea, `encoding = 'binary'`), не больше 3 МБ на файл (`RAW_MAX_BYTES`: тело запроса Vercel ~4.5 МБ, base64 +33%); загрузка идёт пачками по ~3 МБ. Выгрузка (`exportLanguage` → `OutFile.data`), zip на сайте, `export?binary=1`, релизы и `source/` в «Опубликовать» отдают их байт в байт; `export` без `binary` кладёт их байты в `data`. Двоичный файл с расширением, которому назначен текстовый формат, сохраняется как есть с ошибкой в `errors`.
+- **Репо игры**: `game.json` может содержать `format_map` — при `/admin/import` он дополняет карту на форуме (записи из файла главнее), «Опубликовать» пишет в `game.json` текущую карту. Старое поле `format` по-прежнему принимается как формат по умолчанию.
+- Миграция для существующих игр: `source_files.format = games.format`, карта — все расширения файлов игры → `games.format` (у Gunpoint: `{".gpc": "gunpoint"}`), так что строки, ключи и утверждения не меняются.
+
+## Удаление оригиналов и корзина
+
+Миграция `011_source_trash.sql`: `source_files_trash` (те же поля, что у `source_files`, + `deleted_by`, `deleted_at`). `deleteSource` (`src/sync.ts`) переносит строки `source_files` в корзину и помечает строки файла `removed` — как при пропаже файла из полной загрузки (`finalizeSource` теперь тоже кладёт пропавшие оригиналы в корзину). Варианты, голоса и утверждения не трогаются. `restoreSource` возвращает файл через `importSource` (формат — по текущей карте): строки с теми же `(file, key)` снова видны со своими утверждениями (если оригинал строки не менялся — не устаревшие). Пути, которые уже загружены заново, не перезаписываются (`skipped`). Записи старше 30 дней удаляются при следующем удалении. На сайте — панель «Оригинальные файлы» в настройках: фильтр, сортировка, выбор галочками, удаление с подтверждением в панели и «Отменить» в уведомлении (вызывает restore), список корзины.
+
+## MCP: управление играми
+
+Все инструменты вызывают тот же REST API от имени пользователя (права, баны и лимиты — как на сайте). Имена существующих инструментов не меняются (коннектор claude.ai кэширует список). Управление: `create_game` → `POST /games`; `update_game_info` (только переданные поля) → `POST /settings` и возвращает игру; `add_language` / `remove_language {force?}` — читают языки из `GET /games/:slug` и пишут список целиком; `set_format_map` → `POST /settings {format_map}`; `reparse_game`; `list_source_files` (только чтение); `upload_source_files {files: [{path, content | base64, encoding?}], replace?}` — не больше 3 МБ за вызов (иначе ошибка с просьбой разделить), `replace` передаёт пути вызова как полный набор; `delete_source_files` / `restore_source_files {paths}`. Тесты — `test/mcp.test.ts`.
 
 ## Публикация выбранных языков
 
