@@ -168,7 +168,7 @@ export default {
   'set.publishRepoFallback': 'das Repository aus „Allgemein“',
   'set.version': 'Release-Version (optional)',
   'set.versionPh': 'z. B. 1.0',
-  'set.versionHint': 'Wenn angegeben, bekommt jede Sprache ein Release <code>&lt;Sprache&gt;-&lt;Version&gt;</code> mit Zip-Archiv und Liste der Übersetzer.',
+  'set.versionHint': "Wenn angegeben, bekommt jede gewählte Sprache ein Release <code>&lt;Sprache&gt;-&lt;Version&gt;</code> mit Zip-Archiv und Liste der Übersetzer.",
   'set.publishBtn': 'Veröffentlichen',
   'set.openRepo': 'Repository öffnen →',
   'set.repoFirst': 'Zuerst das Repository angeben und speichern',
@@ -357,4 +357,23 @@ export default {
   "ov.credits": "Übersetzer",
   "ov.noCredits": "Noch keine freigegebenen Übersetzungen.",
   "set.forceHint": "Klicke erneut auf „Speichern“, um die Sprache trotzdem zu entfernen.",
+
+  // сохранённая копия (сервер недоступен)
+  "snap.banner": "Der Server ist nicht erreichbar — gezeigt wird eine gespeicherte Kopie vom {date}, nur lesen.",
+  "snap.readOnly": "Gerade ist nur eine gespeicherte Kopie der Website verfügbar — Änderungen sind deaktiviert.",
+  "snap.unavailable": "Das ist in der gespeicherten Kopie nicht enthalten.",
+  "snap.retry": "Erneut versuchen",
+
+  // публикация выбранных языков
+  "pub.langs": "Zu veröffentlichende Sprachen",
+  "pub.others": "Andere Sprachen im Repository bleiben unverändert.",
+  "pub.chooseLang": "Wähle mindestens eine Sprache",
+  "pub.langApproved": "{a} von {t} freigegeben",
+  "pub.publishLang": "Veröffentlichen",
+  "pub.publishLangTitle": "„{lang}“ auf GitHub veröffentlichen",
+  "pub.res.released": "{lang}: Release {link}",
+  "pub.res.exists": "{lang}: Release {tag} gibt es schon — der Sprachordner wurde aktualisiert; für ein neues Release eine andere Version angeben",
+  "pub.res.skipped": "{lang}: keine freigegebenen Zeichenketten — kein Release",
+  "pub.res.error": "{lang}: {error}",
+  "pub.res.committed": "{lang}: im Repository aktualisiert",
 };

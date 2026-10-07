@@ -168,7 +168,7 @@ export default {
   'set.publishRepoFallback': '「基本」のリポジトリ',
   'set.version': 'リリースのバージョン（任意）',
   'set.versionPh': '例：1.0',
-  'set.versionHint': '指定すると、言語ごとに zip と翻訳者一覧付きの Release <code>&lt;言語&gt;-&lt;バージョン&gt;</code> が作成されます。',
+  'set.versionHint': "指定すると、選んだ言語ごとに zip と翻訳者一覧付きの Release <code>&lt;言語&gt;-&lt;バージョン&gt;</code> が作成されます。",
   'set.publishBtn': '公開',
   'set.openRepo': 'リポジトリを開く →',
   'set.repoFirst': '先にリポジトリを指定して保存してください',
@@ -357,4 +357,23 @@ export default {
   "ov.credits": "翻訳者",
   "ov.noCredits": "承認済みの翻訳はまだありません。",
   "set.forceHint": "それでも言語を外すには、もう一度「保存」を押してください。",
+
+  // сохранённая копия (сервер недоступен)
+  "snap.banner": "サーバーに接続できません — {date} 時点の保存コピーを表示しています（閲覧のみ）。",
+  "snap.readOnly": "現在はサイトの保存コピーのみ利用できます — 変更はできません。",
+  "snap.unavailable": "保存コピーにはこの内容がありません。",
+  "snap.retry": "再試行",
+
+  // публикация выбранных языков
+  "pub.langs": "公開する言語",
+  "pub.others": "リポジトリ内のほかの言語は変更されません。",
+  "pub.chooseLang": "言語を 1 つ以上選んでください",
+  "pub.langApproved": "承認済み {a} / {t}",
+  "pub.publishLang": "公開",
+  "pub.publishLangTitle": "「{lang}」を GitHub に公開",
+  "pub.res.released": "{lang}：リリース {link}",
+  "pub.res.exists": "{lang}：リリース {tag} は既にあります — 言語フォルダは更新しました。新しいリリースには別のバージョンを指定してください",
+  "pub.res.skipped": "{lang}：承認済みのテキストがないためリリースしていません",
+  "pub.res.error": "{lang}：{error}",
+  "pub.res.committed": "{lang}：リポジトリを更新しました",
 };

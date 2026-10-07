@@ -168,7 +168,7 @@ export default {
   'set.publishRepoFallback': '“基本信息”中的仓库',
   'set.version': '发布版本（可选）',
   'set.versionPh': '例如 1.0',
-  'set.versionHint': '填写后，每种语言都会生成一个 Release <code>&lt;语言&gt;-&lt;版本&gt;</code>，附带 zip 压缩包和译者名单。',
+  'set.versionHint': "填写后，每种选中的语言都会生成 Release <code>&lt;语言&gt;-&lt;版本&gt;</code>，附带 zip 压缩包和译者名单。",
   'set.publishBtn': '发布',
   'set.openRepo': '打开仓库 →',
   'set.repoFirst': '请先填写仓库并保存',
@@ -357,4 +357,23 @@ export default {
   "ov.credits": "译者",
   "ov.noCredits": "还没有已审定的翻译。",
   "set.forceHint": "再次点击“保存”即可仍然移除该语言。",
+
+  // сохранённая копия (сервер недоступен)
+  "snap.banner": "服务器不可用 —— 正在显示 {date} 的保存副本，只读。",
+  "snap.readOnly": "目前只能访问网站的保存副本 —— 无法进行修改。",
+  "snap.unavailable": "保存副本中没有此内容。",
+  "snap.retry": "重试",
+
+  // публикация выбранных языков
+  "pub.langs": "要发布的语言",
+  "pub.others": "仓库中的其他语言保持不变。",
+  "pub.chooseLang": "请至少选择一种语言",
+  "pub.langApproved": "已审定 {a} / {t}",
+  "pub.publishLang": "发布",
+  "pub.publishLangTitle": "将“{lang}”发布到 GitHub",
+  "pub.res.released": "{lang}：发布 {link}",
+  "pub.res.exists": "{lang}：发布 {tag} 已存在 —— 语言文件夹已更新；如需新发布请填写其他版本",
+  "pub.res.skipped": "{lang}：没有已审定的文本 —— 未发布",
+  "pub.res.error": "{lang}：{error}",
+  "pub.res.committed": "{lang}：已在仓库中更新",
 };

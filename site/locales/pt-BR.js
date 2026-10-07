@@ -168,7 +168,7 @@ export default {
   'set.publishRepoFallback': 'o repositório de “Geral”',
   'set.version': 'Versão do release (opcional)',
   'set.versionPh': 'ex.: 1.0',
-  'set.versionHint': 'Se informada, cada idioma ganha um Release <code>&lt;idioma&gt;-&lt;versão&gt;</code> com um arquivo zip e a lista de tradutores.',
+  'set.versionHint': "Se informada, cada idioma marcado ganha um Release <code>&lt;idioma&gt;-&lt;versão&gt;</code> com um arquivo zip e a lista de tradutores.",
   'set.publishBtn': 'Publicar',
   'set.openRepo': 'Abrir repositório →',
   'set.repoFirst': 'Primeiro informe o repositório e salve',
@@ -357,4 +357,23 @@ export default {
   "ov.credits": "Tradutores",
   "ov.noCredits": "Ainda não há traduções aprovadas.",
   "set.forceHint": "Clique em “Salvar” de novo para remover o idioma mesmo assim.",
+
+  // сохранённая копия (сервер недоступен)
+  "snap.banner": "O servidor está indisponível — mostrando uma cópia salva de {date}, somente leitura.",
+  "snap.readOnly": "No momento só há uma cópia salva do site — alterações estão desativadas.",
+  "snap.unavailable": "Isto não está na cópia salva.",
+  "snap.retry": "Tentar de novo",
+
+  // публикация выбранных языков
+  "pub.langs": "Idiomas a publicar",
+  "pub.others": "Os outros idiomas do repositório não mudam.",
+  "pub.chooseLang": "Marque pelo menos um idioma",
+  "pub.langApproved": "{a} de {t} aprovadas",
+  "pub.publishLang": "Publicar",
+  "pub.publishLangTitle": "Publicar “{lang}” no GitHub",
+  "pub.res.released": "{lang}: release {link}",
+  "pub.res.exists": "{lang}: o release {tag} já existe — a pasta do idioma foi atualizada; informe outra versão para um novo release",
+  "pub.res.skipped": "{lang}: nenhuma string aprovada — sem release",
+  "pub.res.error": "{lang}: {error}",
+  "pub.res.committed": "{lang}: atualizado no repositório",
 };

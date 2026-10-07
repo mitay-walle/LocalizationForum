@@ -168,7 +168,7 @@ export default {
   'set.publishRepoFallback': 'le dépôt indiqué dans « Général »',
   'set.version': 'Version de la release (facultatif)',
   'set.versionPh': 'par ex. 1.0',
-  'set.versionHint': 'Si elle est indiquée, chaque langue aura une Release <code>&lt;langue&gt;-&lt;version&gt;</code> avec une archive zip et la liste des traducteurs.',
+  'set.versionHint': "Si elle est indiquée, chaque langue cochée aura une Release <code>&lt;langue&gt;-&lt;version&gt;</code> avec une archive zip et la liste des traducteurs.",
   'set.publishBtn': 'Publier',
   'set.openRepo': 'Ouvrir le dépôt →',
   'set.repoFirst': 'Indiquez d’abord le dépôt et enregistrez',
@@ -357,4 +357,23 @@ export default {
   "ov.credits": "Traducteurs",
   "ov.noCredits": "Pas encore de traductions validées.",
   "set.forceHint": "Cliquez à nouveau sur « Enregistrer » pour retirer la langue quand même.",
+
+  // сохранённая копия (сервер недоступен)
+  "snap.banner": "Le serveur est indisponible — copie enregistrée du {date} affichée, en lecture seule.",
+  "snap.readOnly": "Seule une copie enregistrée du site est disponible pour l’instant — les modifications sont désactivées.",
+  "snap.unavailable": "Ceci n’est pas dans la copie enregistrée.",
+  "snap.retry": "Réessayer",
+
+  // публикация выбранных языков
+  "pub.langs": "Langues à publier",
+  "pub.others": "Les autres langues du dépôt restent inchangées.",
+  "pub.chooseLang": "Cochez au moins une langue",
+  "pub.langApproved": "{a} sur {t} validées",
+  "pub.publishLang": "Publier",
+  "pub.publishLangTitle": "Publier « {lang} » sur GitHub",
+  "pub.res.released": "{lang} : release {link}",
+  "pub.res.exists": "{lang} : la release {tag} existe déjà — le dossier de la langue a été mis à jour ; indiquez une autre version pour une nouvelle release",
+  "pub.res.skipped": "{lang} : aucune chaîne validée — pas de release",
+  "pub.res.error": "{lang} : {error}",
+  "pub.res.committed": "{lang} : mis à jour dans le dépôt",
 };

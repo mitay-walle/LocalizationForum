@@ -168,7 +168,7 @@ export default {
   'set.publishRepoFallback': 'repozytorium z sekcji „Ogólne”',
   'set.version': 'Wersja wydania (opcjonalnie)',
   'set.versionPh': 'np. 1.0',
-  'set.versionHint': 'Jeśli ją podasz, każdy język dostanie Release <code>&lt;język&gt;-&lt;wersja&gt;</code> z archiwum zip i listą tłumaczy.',
+  'set.versionHint': "Jeśli ją podasz, każdy zaznaczony język dostanie Release <code>&lt;język&gt;-&lt;wersja&gt;</code> z archiwum zip i listą tłumaczy.",
   'set.publishBtn': 'Opublikuj',
   'set.openRepo': 'Otwórz repozytorium →',
   'set.repoFirst': 'Najpierw podaj repozytorium i zapisz',
@@ -357,4 +357,23 @@ export default {
   "ov.credits": "Tłumacze",
   "ov.noCredits": "Nie ma jeszcze zatwierdzonych tłumaczeń.",
   "set.forceHint": "Kliknij „Zapisz” jeszcze raz, aby mimo to usunąć język.",
+
+  // сохранённая копия (сервер недоступен)
+  "snap.banner": "Serwer jest niedostępny — wyświetlana jest zapisana kopia z {date}, tylko do odczytu.",
+  "snap.readOnly": "Teraz dostępna jest tylko zapisana kopia strony — zmiany są wyłączone.",
+  "snap.unavailable": "Tego nie ma w zapisanej kopii.",
+  "snap.retry": "Spróbuj ponownie",
+
+  // публикация выбранных языков
+  "pub.langs": "Które języki opublikować",
+  "pub.others": "Pozostałe języki w repozytorium się nie zmienią.",
+  "pub.chooseLang": "Zaznacz co najmniej jeden język",
+  "pub.langApproved": "zatwierdzono {a} z {t}",
+  "pub.publishLang": "Opublikuj",
+  "pub.publishLangTitle": "Opublikuj „{lang}” na GitHubie",
+  "pub.res.released": "{lang}: wydanie {link}",
+  "pub.res.exists": "{lang}: wydanie {tag} już istnieje — folder języka zaktualizowano; dla nowego wydania podaj inną wersję",
+  "pub.res.skipped": "{lang}: brak zatwierdzonych tekstów — bez wydania",
+  "pub.res.error": "{lang}: {error}",
+  "pub.res.committed": "{lang}: zaktualizowano w repozytorium",
 };

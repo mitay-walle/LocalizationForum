@@ -168,7 +168,7 @@ export default {
   'set.publishRepoFallback': 'the repository from “General”',
   'set.version': 'Release version (optional)',
   'set.versionPh': 'e.g. 1.0',
-  'set.versionHint': 'If set, each language gets a Release <code>&lt;language&gt;-&lt;version&gt;</code> with a zip archive and a list of translators.',
+  'set.versionHint': "If set, each selected language gets a Release <code>&lt;language&gt;-&lt;version&gt;</code> with a zip archive and a list of translators.",
   'set.publishBtn': 'Publish',
   'set.openRepo': 'Open repository →',
   'set.repoFirst': 'Set the repository and save first',
@@ -357,4 +357,23 @@ export default {
   "ov.credits": "Translators",
   "ov.noCredits": "No approved translations yet.",
   "set.forceHint": "Press “Save” again to remove the language anyway.",
+
+  // сохранённая копия (сервер недоступен)
+  "snap.banner": "The server is unavailable — showing a saved copy from {date}, read-only.",
+  "snap.readOnly": "Only a saved copy of the site is available right now — changes are disabled.",
+  "snap.unavailable": "This is not in the saved copy.",
+  "snap.retry": "Try again",
+
+  // публикация выбранных языков
+  "pub.langs": "Languages to publish",
+  "pub.others": "Other languages in the repository stay unchanged.",
+  "pub.chooseLang": "Select at least one language",
+  "pub.langApproved": "{a} of {t} approved",
+  "pub.publishLang": "Publish",
+  "pub.publishLangTitle": "Publish “{lang}” to GitHub",
+  "pub.res.released": "{lang}: release {link}",
+  "pub.res.exists": "{lang}: release {tag} already exists — the language folder was updated; use another version for a new release",
+  "pub.res.skipped": "{lang}: no approved strings — no release",
+  "pub.res.error": "{lang}: {error}",
+  "pub.res.committed": "{lang}: updated in the repository",
 };
