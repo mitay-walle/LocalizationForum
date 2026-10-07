@@ -73,7 +73,8 @@
 
 - **переводить:** искать строки, проверять и предлагать переводы (варианты получают значок «ИИ»), голосовать; модератору — утверждать и менять этап перевода;
 - **заводить и вести игры:** создать игру, поменять название, описание, ссылки, обложку и репозиторий, добавить или убрать язык;
-- **работать с файлами:** загрузить оригиналы (текст и картинки), посмотреть список, удалить и вернуть из корзины, задать формат по расширению и пересчитать строки.
+- **работать с файлами:** загрузить оригиналы (текст и картинки), посмотреть список, удалить и вернуть из корзины, задать формат по расширению и пересчитать строки;
+- **загрузить готовый перевод файлами:** как варианты «ИИ» или, если вы управляете игрой, сразу утверждённым; строки, совпадающие с оригиналом, пропускаются.
 
 Решение по-прежнему принимают люди-модераторы.
 
@@ -88,7 +89,7 @@
 - **Get the translation:** open the game's GitHub **Releases**, take the newest release for your language (tag `<language>-<version>`, e.g. `ru-1.0`), download the zip from **Assets** and unpack it over the game folder. Don't download the repository source.
 - **Add your game:** *+ New game* → choose or describe the file format → upload the original files in *Game settings* → *Publish to GitHub* when ready (file encodings are detected from the originals and kept byte-for-byte; pick another one per language in *Game settings → File encoding* if needed) — tick only the languages you want to release; the others in the repository stay untouched. Add more translation languages on the game page (*+ Add language*).
 - **Rules:** up to 3 own variants per line (30 in total per line) and 500 per hour; language moderators are exempt. Spammers can be banned per game by its managers or site-wide by admins — banned users can only read.
-- **AI assistants:** connect Claude or another assistant via MCP (⚙ → Tokens and MCP connection). With your permissions it can find, check and propose translations (marked “AI”), vote, and — for games you manage — create games, edit their info and languages, upload / list / delete / restore original files and set file formats; humans still approve.
+- **AI assistants:** connect Claude or another assistant via MCP (⚙ → Tokens and MCP connection). With your permissions it can find, check and propose translations (marked “AI”), vote, and — for games you manage — create games, edit their info and languages, upload / list / delete / restore original files, set file formats and upload ready translation files (as AI variants, or approved for managers); humans still approve.
 
 ---
 
